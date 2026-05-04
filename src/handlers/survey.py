@@ -5,7 +5,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 
 from config import DISTRICTS, THEMES
-from db import get_all_users, is_admin_user, upsert_user
+from db import execute_query, get_all_users, is_admin_user, upsert_user
 from keyboards import AFTER_ROUTE_OPTIONS, build_keyboard
 from services.places import (
     PlacesLoadError,
@@ -18,9 +18,7 @@ from services.places import (
 from states import Survey
 
 router = Router()
-PLACES_ERROR_TEXT = (
-    "Не удалось загрузить места из таблицы. Попробуйте чуть позже."
-)
+PLACES_ERROR_TEXT = "Не удалось загрузить места из таблицы. Попробуйте чуть позже."
 
 
 async def reset_to_start(message: types.Message, state: FSMContext):
@@ -57,6 +55,22 @@ def format_user_row(user):
         f"created_at: {user['created_at']}\n"
         f"updated_at: {user['updated_at']}"
     )
+
+
+def format_db_result(columns, rows):
+    if not rows:
+        return "Query OK. 0 rows."
+
+    lines = []
+    for row in rows:
+        parts = [f"{column}={row[column]}" for column in columns]
+        lines.append(", ".join(parts))
+    return "\n".join(lines)
+
+
+async def send_text_in_chunks(message: types.Message, text: str, chunk_size=3500):
+    for start in range(0, len(text), chunk_size):
+        await message.answer(text[start : start + chunk_size])
 
 
 @router.message(Command("start"))
@@ -108,6 +122,29 @@ async def cmd_reload_google_data(message: types.Message):
         return
 
     await message.answer(f"Данные из Google Sheets обновлены: {len(places)} записей.")
+
+
+@router.message(Command("db"))
+async def cmd_db(message: types.Message):
+    # if not message.from_user or not is_admin_user(message.from_user.id):
+    #     await message.answer("Эта команда доступна только администратору.")
+    #     return
+
+    text = message.text or ""
+    _, _, query = text.partition(" ")
+    query = query.strip()
+    if not query:
+        await message.answer("Использование: /db SELECT * FROM users;")
+        return
+
+    try:
+        columns, rows = execute_query(query)
+    except Exception as exc:
+        await message.answer(f"SQL error: {exc}")
+        return
+
+    result = format_db_result(columns, rows)
+    await send_text_in_chunks(message, result)
 
 
 @router.message(Survey.district)

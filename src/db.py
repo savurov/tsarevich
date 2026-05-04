@@ -126,6 +126,15 @@ def get_all_users():
     return rows
 
 
+def execute_query(query):
+    with closing(get_connection()) as connection:
+        cursor = connection.execute(query)
+        rows = cursor.fetchall() if cursor.description else []
+        columns = [description[0] for description in cursor.description or []]
+        connection.commit()
+    return columns, rows
+
+
 def create_subscription(
     user_id,
     provider,
