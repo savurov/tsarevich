@@ -5,7 +5,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 
 from config import DISTRICTS, THEMES
-from db import is_admin_user, upsert_user
+from db import get_all_users, is_admin_user, upsert_user
 from keyboards import AFTER_ROUTE_OPTIONS, build_keyboard
 from services.places import (
     PlacesLoadError,
@@ -45,11 +45,54 @@ async def show_district_menu(message: types.Message, state: FSMContext):
     )
 
 
+def format_user_row(user):
+    return (
+        f"id: {user['id']}\n"
+        f"telegram_user_id: {user['telegram_user_id']}\n"
+        f"username: {user['username'] or '-'}\n"
+        f"first_name: {user['first_name'] or '-'}\n"
+        f"last_name: {user['last_name'] or '-'}\n"
+        f"language_code: {user['language_code'] or '-'}\n"
+        f"is_admin: {user['is_admin']}\n"
+        f"created_at: {user['created_at']}\n"
+        f"updated_at: {user['updated_at']}"
+    )
+
+
 @router.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     if message.from_user:
         upsert_user(message.from_user)
     await show_district_menu(message, state)
+
+
+@router.message(Command("admin"))
+async def cmd_admin(message: types.Message):
+    users = get_all_users()
+    if not users:
+        await message.answer("Пользователей в базе пока нет.")
+        return
+
+    chunks = []
+    current_chunk = []
+    current_length = 0
+
+    for user in users:
+        user_text = format_user_row(user)
+        block = f"{user_text}\n\n"
+        if current_chunk and current_length + len(block) > 3500:
+            chunks.append("".join(current_chunk))
+            current_chunk = []
+            current_length = 0
+        current_chunk.append(block)
+        current_length += len(block)
+
+    if current_chunk:
+        chunks.append("".join(current_chunk))
+
+    for index, chunk in enumerate(chunks, 1):
+        header = f"Users {index}/{len(chunks)}\n\n" if len(chunks) > 1 else ""
+        await message.answer(f"{header}{chunk}")
 
 
 @router.message(Command("reload_google_data"))

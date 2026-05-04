@@ -114,6 +114,18 @@ def is_admin_user(telegram_user_id):
     return bool(row and row["is_admin"])
 
 
+def get_all_users():
+    with closing(get_connection()) as connection:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM users
+            ORDER BY created_at DESC, id DESC
+            """
+        ).fetchall()
+    return rows
+
+
 def create_subscription(
     user_id,
     provider,
