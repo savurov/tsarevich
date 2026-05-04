@@ -126,6 +126,24 @@ def get_all_users():
     return rows
 
 
+def get_all_subscriptions():
+    with closing(get_connection()) as connection:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM subscriptions
+            ORDER BY created_at DESC, id DESC
+            """
+        ).fetchall()
+    return rows
+
+
+def get_table_columns(table_name):
+    with closing(get_connection()) as connection:
+        rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return [row["name"] for row in rows]
+
+
 def execute_query(query):
     with closing(get_connection()) as connection:
         cursor = connection.execute(query)

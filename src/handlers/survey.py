@@ -1,11 +1,20 @@
 import asyncio
+import csv
+import io
 
-from aiogram import Router, types
+from aiogram import F, Router, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 
 from config import DISTRICTS, THEMES
-from db import execute_query, get_all_users, is_admin_user, upsert_user
+from db import (
+    execute_query,
+    get_all_subscriptions,
+    get_all_users,
+    get_table_columns,
+    is_admin_user,
+    upsert_user,
+)
 from keyboards import AFTER_ROUTE_OPTIONS, build_keyboard
 from services.places import (
     PlacesLoadError,
@@ -19,6 +28,10 @@ from states import Survey
 
 router = Router()
 PLACES_ERROR_TEXT = "Не удалось загрузить места из таблицы. Попробуйте чуть позже."
+ADMIN_ACCESS_TEXT = "Эта команда доступна только администратору."
+ADMIN_MENU_TEXT = "Админ-меню"
+ADMIN_RELOAD_CALLBACK = "admin:reload_google_data"
+ADMIN_EXPORT_CALLBACK = "admin:export_csv"
 
 
 async def reset_to_start(message: types.Message, state: FSMContext):
@@ -43,17 +56,22 @@ async def show_district_menu(message: types.Message, state: FSMContext):
     )
 
 
-def format_user_row(user):
-    return (
-        f"id: {user['id']}\n"
-        f"telegram_user_id: {user['telegram_user_id']}\n"
-        f"username: {user['username'] or '-'}\n"
-        f"first_name: {user['first_name'] or '-'}\n"
-        f"last_name: {user['last_name'] or '-'}\n"
-        f"language_code: {user['language_code'] or '-'}\n"
-        f"is_admin: {user['is_admin']}\n"
-        f"created_at: {user['created_at']}\n"
-        f"updated_at: {user['updated_at']}"
+def get_admin_keyboard():
+    return types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                types.InlineKeyboardButton(
+                    text="Обновить данные из таблицы",
+                    callback_data=ADMIN_RELOAD_CALLBACK,
+                )
+            ],
+            [
+                types.InlineKeyboardButton(
+                    text="Выгрузить БД в CSV",
+                    callback_data=ADMIN_EXPORT_CALLBACK,
+                )
+            ],
+        ]
     )
 
 
@@ -73,6 +91,18 @@ async def send_text_in_chunks(message: types.Message, text: str, chunk_size=3500
         await message.answer(text[start : start + chunk_size])
 
 
+def build_csv_file(table_name, columns, rows):
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(columns)
+    for row in rows:
+        writer.writerow([row[column] for column in columns])
+    return types.BufferedInputFile(
+        buffer.getvalue().encode("utf-8"),
+        filename=f"{table_name}.csv",
+    )
+
+
 @router.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     if message.from_user:
@@ -82,53 +112,60 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
 @router.message(Command("admin"))
 async def cmd_admin(message: types.Message):
-    users = get_all_users()
-    if not users:
-        await message.answer("Пользователей в базе пока нет.")
+    if not message.from_user or not is_admin_user(message.from_user.id):
+        await message.answer(ADMIN_ACCESS_TEXT)
         return
 
-    chunks = []
-    current_chunk = []
-    current_length = 0
-
-    for user in users:
-        user_text = format_user_row(user)
-        block = f"{user_text}\n\n"
-        if current_chunk and current_length + len(block) > 3500:
-            chunks.append("".join(current_chunk))
-            current_chunk = []
-            current_length = 0
-        current_chunk.append(block)
-        current_length += len(block)
-
-    if current_chunk:
-        chunks.append("".join(current_chunk))
-
-    for index, chunk in enumerate(chunks, 1):
-        header = f"Users {index}/{len(chunks)}\n\n" if len(chunks) > 1 else ""
-        await message.answer(f"{header}{chunk}")
+    await message.answer(ADMIN_MENU_TEXT, reply_markup=get_admin_keyboard())
 
 
-@router.message(Command("reload_google_data"))
-async def cmd_reload_google_data(message: types.Message):
-    if not message.from_user or not is_admin_user(message.from_user.id):
-        await message.answer("Эта команда доступна только администратору.")
+@router.callback_query(F.data == ADMIN_RELOAD_CALLBACK)
+async def handle_admin_reload(callback: types.CallbackQuery):
+    if not callback.from_user or not is_admin_user(callback.from_user.id):
+        await callback.answer(ADMIN_ACCESS_TEXT, show_alert=True)
         return
 
     try:
         places = await reload_places()
     except PlacesLoadError:
-        await message.answer(PLACES_ERROR_TEXT)
+        await callback.answer("Ошибка обновления.", show_alert=True)
+        if callback.message:
+            await callback.message.answer(PLACES_ERROR_TEXT)
         return
 
-    await message.answer(f"Данные из Google Sheets обновлены: {len(places)} записей.")
+    await callback.answer("Данные обновлены.")
+    if callback.message:
+        await callback.message.answer(
+            f"Данные из Google Sheets обновлены: {len(places)} записей."
+        )
+
+
+@router.callback_query(F.data == ADMIN_EXPORT_CALLBACK)
+async def handle_admin_export(callback: types.CallbackQuery):
+    if not callback.from_user or not is_admin_user(callback.from_user.id):
+        await callback.answer(ADMIN_ACCESS_TEXT, show_alert=True)
+        return
+
+    users = get_all_users()
+    subscriptions = get_all_subscriptions()
+    users_columns = get_table_columns("users")
+    subscriptions_columns = get_table_columns("subscriptions")
+
+    if callback.message:
+        await callback.message.answer_document(
+            build_csv_file("users", users_columns, users)
+        )
+        await callback.message.answer_document(
+            build_csv_file("subscriptions", subscriptions_columns, subscriptions)
+        )
+    await callback.answer("CSV выгружены.")
 
 
 @router.message(Command("db"))
 async def cmd_db(message: types.Message):
-    # if not message.from_user or not is_admin_user(message.from_user.id):
-    #     await message.answer("Эта команда доступна только администратору.")
-    #     return
+    if not message.from_user or not is_admin_user(message.from_user.id):
+        await message.answer("Эта команда доступна только администратору.")
+        return
 
     text = message.text or ""
     _, _, query = text.partition(" ")
