@@ -3,6 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    command: ["watchfiles", "--filter", "python", "python /app/src/main.py", "/app/src"]
     env_file:
       - .env
     environment:
