@@ -1,10 +1,12 @@
 import csv
 import io
+import re
 from urllib.parse import quote_plus
 
 import aiohttp
 
 from config import (
+    DISTRICTS,
     MAX_ROUTE_PLACES,
     PLACES_REQUEST_TIMEOUT_SECONDS,
     REQUIRED_PLACE_COLUMNS,
@@ -24,6 +26,26 @@ def _normalize_place(raw_place):
     return {key: (value or "").strip() for key, value in raw_place.items()}
 
 
+def _build_metro_lookup():
+    lookup = {}
+    for metros in DISTRICTS.values():
+        for metro in metros:
+            lookup[metro.strip().lower()] = metro
+    return lookup
+
+
+def _build_theme_lookup():
+    lookup = {}
+    for theme_value in THEMES.values():
+        if theme_value:
+            lookup[theme_value.strip().lower()] = theme_value
+    return lookup
+
+
+METRO_LOOKUP = _build_metro_lookup()
+THEME_LOOKUP = _build_theme_lookup()
+
+
 def _validate_columns(fieldnames):
     if not fieldnames:
         raise PlacesLoadError("Google Sheets returned an empty CSV header")
@@ -34,6 +56,35 @@ def _validate_columns(fieldnames):
     if missing_columns:
         missing = ", ".join(missing_columns)
         raise PlacesLoadError(f"Missing required CSV columns: {missing}")
+
+
+def _split_classification(value):
+    return [part.strip().lower() for part in re.split(r"[,;/]+", value) if part.strip()]
+
+
+def _normalize_metro(value):
+    if not value:
+        return ""
+    return METRO_LOOKUP.get(value.strip().lower(), value.strip())
+
+
+def _normalize_classification(value):
+    if not value:
+        return ""
+
+    normalized_parts = []
+    for part in _split_classification(value):
+        normalized_parts.append(THEME_LOOKUP.get(part, part))
+    return ", ".join(normalized_parts)
+
+
+def _normalize_domain_values(place):
+    normalized_place = dict(place)
+    normalized_place["Метро"] = _normalize_metro(place.get("Метро", ""))
+    normalized_place["классификация"] = _normalize_classification(
+        place.get("классификация", "")
+    )
+    return normalized_place
 
 
 async def _load_places():
@@ -51,18 +102,28 @@ async def _load_places():
     reader = csv.DictReader(io.StringIO(text))
     _validate_columns(reader.fieldnames)
 
-    places = [
-        _normalize_place(place)
-        for place in reader
+    return [
+        _normalize_domain_values(
+            _normalize_place(
+                {
+                    **place,
+                    "_sheet_row_number": str(sheet_row_number),
+                }
+            )
+        )
+        for sheet_row_number, place in enumerate(reader, start=2)
         if any((value or "").strip() for value in place.values())
     ]
-    return places
 
 
 async def get_places():
     if not _places_cache:
         raise PlacesLoadError("Places cache is empty. Load data before handling requests")
     return _places_cache
+
+
+def get_places_count():
+    return len(_places_cache)
 
 
 async def reload_places():
@@ -127,3 +188,64 @@ def format_route(places, metro, theme):
         text += f"🗺 {maps_url}\n\n"
         text += "—" * 20 + "\n\n"
     return text
+
+
+def _get_allowed_metros():
+    return set(METRO_LOOKUP.values())
+
+
+def _get_allowed_theme_values():
+    return set(THEME_LOOKUP.values())
+
+
+def validate_places(places):
+    warnings = []
+    allowed_metros = _get_allowed_metros()
+    allowed_theme_values = _get_allowed_theme_values()
+
+    for place in places:
+        row_number = place.get("_sheet_row_number", "?")
+        metro = place.get("Метро", "")
+        classification = place.get("классификация", "")
+
+        if not metro:
+            warnings.append(
+                {
+                    "row_number": row_number,
+                    "field": "Метро",
+                    "value": "—",
+                    "reason": "метро отсутствует",
+                }
+            )
+        elif metro not in allowed_metros:
+            warnings.append(
+                {
+                    "row_number": row_number,
+                    "field": "Метро",
+                    "value": metro,
+                    "reason": "неизвестное метро",
+                }
+            )
+
+        if not classification:
+            warnings.append(
+                {
+                    "row_number": row_number,
+                    "field": "классификация",
+                    "value": "—",
+                    "reason": "классификация отсутствует",
+                }
+            )
+
+        for part in _split_classification(classification):
+            if part not in allowed_theme_values:
+                warnings.append(
+                    {
+                        "row_number": row_number,
+                        "field": "классификация",
+                        "value": part,
+                        "reason": "неизвестная классификация",
+                    }
+                )
+
+    return warnings

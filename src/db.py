@@ -11,145 +11,154 @@ def get_connection():
     DB_FILE.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(DB_FILE)
     connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA journal_mode = WAL")
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
 
 
-def init_db():
+def fetch_one(query, params=()):
     with closing(get_connection()) as connection:
-        connection.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                telegram_user_id INTEGER NOT NULL UNIQUE,
-                username TEXT,
-                first_name TEXT,
-                last_name TEXT,
-                language_code TEXT,
-                is_admin INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
+        return connection.execute(query, params).fetchone()
 
-            CREATE TABLE IF NOT EXISTS subscriptions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                provider TEXT NOT NULL,
-                external_subscription_id TEXT,
-                status TEXT NOT NULL DEFAULT 'pending',
-                plan_code TEXT,
-                started_at TEXT,
-                expires_at TEXT,
-                canceled_at TEXT,
-                metadata_json TEXT,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-                UNIQUE(provider, external_subscription_id)
-            );
 
-            CREATE INDEX IF NOT EXISTS idx_subscriptions_user_id
-            ON subscriptions(user_id);
+def fetch_all(query, params=()):
+    with closing(get_connection()) as connection:
+        return connection.execute(query, params).fetchall()
 
-            CREATE INDEX IF NOT EXISTS idx_subscriptions_status
-            ON subscriptions(status);
-            """
-        )
-        connection.commit()
+
+def execute_write(query, params=()):
+    with closing(get_connection()) as connection, connection:
+        cursor = connection.execute(query, params)
+    return cursor
+
+
+def execute_script(script):
+    with closing(get_connection()) as connection, connection:
+        connection.executescript(script)
+
+
+def init_db():
+    execute_script(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_user_id INTEGER NOT NULL UNIQUE,
+            username TEXT,
+            first_name TEXT,
+            last_name TEXT,
+            language_code TEXT,
+            is_admin INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            provider TEXT NOT NULL,
+            external_subscription_id TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            plan_code TEXT,
+            started_at TEXT,
+            expires_at TEXT,
+            canceled_at TEXT,
+            metadata_json TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            UNIQUE(provider, external_subscription_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_subscriptions_user_id
+        ON subscriptions(user_id);
+
+        CREATE INDEX IF NOT EXISTS idx_subscriptions_status
+        ON subscriptions(status);
+        """
+    )
 
 
 def upsert_user(telegram_user):
-    with closing(get_connection()) as connection:
-        connection.execute(
-            """
-            INSERT INTO users (
-                telegram_user_id,
-                username,
-                first_name,
-                last_name,
-                language_code
-            )
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(telegram_user_id) DO UPDATE SET
-                username = excluded.username,
-                first_name = excluded.first_name,
-                last_name = excluded.last_name,
-                language_code = excluded.language_code,
-                updated_at = CURRENT_TIMESTAMP
-            """,
-            (
-                telegram_user.id,
-                telegram_user.username,
-                telegram_user.first_name,
-                telegram_user.last_name,
-                telegram_user.language_code,
-            ),
+    execute_write(
+        """
+        INSERT INTO users (
+            telegram_user_id,
+            username,
+            first_name,
+            last_name,
+            language_code
         )
-        connection.commit()
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(telegram_user_id) DO UPDATE SET
+            username = excluded.username,
+            first_name = excluded.first_name,
+            last_name = excluded.last_name,
+            language_code = excluded.language_code,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            telegram_user.id,
+            telegram_user.username,
+            telegram_user.first_name,
+            telegram_user.last_name,
+            telegram_user.language_code,
+        ),
+    )
 
 
 def get_user_by_telegram_id(telegram_user_id):
-    with closing(get_connection()) as connection:
-        row = connection.execute(
-            """
-            SELECT *
-            FROM users
-            WHERE telegram_user_id = ?
-            """,
-            (telegram_user_id,),
-        ).fetchone()
-    return row
+    return fetch_one(
+        """
+        SELECT *
+        FROM users
+        WHERE telegram_user_id = ?
+        """,
+        (telegram_user_id,),
+    )
 
 
 def is_admin_user(telegram_user_id):
-    with closing(get_connection()) as connection:
-        row = connection.execute(
-            """
-            SELECT is_admin
-            FROM users
-            WHERE telegram_user_id = ?
-            """,
-            (telegram_user_id,),
-        ).fetchone()
+    row = fetch_one(
+        """
+        SELECT is_admin
+        FROM users
+        WHERE telegram_user_id = ?
+        """,
+        (telegram_user_id,),
+    )
     return bool(row and row["is_admin"])
 
 
 def get_all_users():
-    with closing(get_connection()) as connection:
-        rows = connection.execute(
-            """
-            SELECT *
-            FROM users
-            ORDER BY created_at DESC, id DESC
-            """
-        ).fetchall()
-    return rows
+    return fetch_all(
+        """
+        SELECT *
+        FROM users
+        ORDER BY created_at DESC, id DESC
+        """
+    )
 
 
 def get_all_subscriptions():
-    with closing(get_connection()) as connection:
-        rows = connection.execute(
-            """
-            SELECT *
-            FROM subscriptions
-            ORDER BY created_at DESC, id DESC
-            """
-        ).fetchall()
-    return rows
+    return fetch_all(
+        """
+        SELECT *
+        FROM subscriptions
+        ORDER BY created_at DESC, id DESC
+        """
+    )
 
 
 def get_table_columns(table_name):
-    with closing(get_connection()) as connection:
-        rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    rows = fetch_all(f"PRAGMA table_info({table_name})")
     return [row["name"] for row in rows]
 
 
 def execute_query(query):
-    with closing(get_connection()) as connection:
+    with closing(get_connection()) as connection, connection:
         cursor = connection.execute(query)
         rows = cursor.fetchall() if cursor.description else []
         columns = [description[0] for description in cursor.description or []]
-        connection.commit()
     return columns, rows
 
 
@@ -164,33 +173,31 @@ def create_subscription(
     canceled_at=None,
     metadata_json=None,
 ):
-    with closing(get_connection()) as connection:
-        cursor = connection.execute(
-            """
-            INSERT INTO subscriptions (
-                user_id,
-                provider,
-                external_subscription_id,
-                status,
-                plan_code,
-                started_at,
-                expires_at,
-                canceled_at,
-                metadata_json
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                user_id,
-                provider,
-                external_subscription_id,
-                status,
-                plan_code,
-                started_at,
-                expires_at,
-                canceled_at,
-                metadata_json,
-            ),
+    cursor = execute_write(
+        """
+        INSERT INTO subscriptions (
+            user_id,
+            provider,
+            external_subscription_id,
+            status,
+            plan_code,
+            started_at,
+            expires_at,
+            canceled_at,
+            metadata_json
         )
-        connection.commit()
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            user_id,
+            provider,
+            external_subscription_id,
+            status,
+            plan_code,
+            started_at,
+            expires_at,
+            canceled_at,
+            metadata_json,
+        ),
+    )
     return cursor.lastrowid
