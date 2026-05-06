@@ -162,22 +162,6 @@ def execute_query(query):
     return columns, rows
 
 
-def has_active_subscription(telegram_user_id):
-    row = fetch_one(
-        """
-        SELECT s.id
-        FROM subscriptions s
-        JOIN users u ON u.id = s.user_id
-        WHERE u.telegram_user_id = ?
-          AND s.status = 'active'
-          AND (s.expires_at IS NULL OR s.expires_at > CURRENT_TIMESTAMP)
-        LIMIT 1
-        """,
-        (telegram_user_id,),
-    )
-    return row is not None
-
-
 def create_subscription(
     user_id,
     provider,
