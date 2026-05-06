@@ -1,12 +1,12 @@
 import asyncio
 
-from aiogram import Router, types
+from aiogram import F, Router, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-from config import DISTRICTS, THEMES
-from db import upsert_user
+from config import DISTRICTS, PLANS, THEMES
+from db import has_active_subscription, upsert_user
 from google_sheets import (
     PlacesLoadError,
     filter_places,
@@ -28,10 +28,39 @@ AFTER_ROUTE_OPTIONS = [
 
 
 class Survey(StatesGroup):
+    payment = State()
     district = State()
     metro = State()
     theme = State()
     after_route = State()
+
+
+def build_payment_keyboard():
+    buttons = [
+        types.InlineKeyboardButton(
+            text=f"📍 {PLANS['district']['label']} — {PLANS['district']['price']} ₽",
+            callback_data="buy:district",
+        ),
+        types.InlineKeyboardButton(
+            text=f"🌍 {PLANS['full']['label']} — {PLANS['full']['price']} ₽",
+            callback_data="buy:full",
+        ),
+    ]
+    return types.InlineKeyboardMarkup(inline_keyboard=[[b] for b in buttons])
+
+
+async def show_payment_menu(message: types.Message, state: FSMContext):
+    await state.set_state(Survey.payment)
+    await message.answer(
+        "👋 Привет!\n\n"
+        "Чтобы пользоваться ботом, выберите тариф:\n\n"
+        f"📍 *{PLANS['district']['label']}* — доступ к маршрутам одного района на месяц\n"
+        f"*{PLANS['district']['price']} ₽*\n\n"
+        f"🌍 *{PLANS['full']['label']}* — все районы без ограничений на месяц\n"
+        f"*{PLANS['full']['price']} ₽*",
+        reply_markup=build_payment_keyboard(),
+        parse_mode="Markdown",
+    )
 
 
 def build_keyboard(buttons, row_width=2):
@@ -73,7 +102,26 @@ async def show_district_menu(message: types.Message, state: FSMContext):
 async def cmd_start(message: types.Message, state: FSMContext):
     if message.from_user:
         upsert_user(message.from_user)
+        if not has_active_subscription(message.from_user.id):
+            await show_payment_menu(message, state)
+            return
     await show_district_menu(message, state)
+
+
+@router.callback_query(Survey.payment, F.data.startswith("buy:"))
+async def handle_plan_selection(callback: types.CallbackQuery, state: FSMContext):
+    plan_key = callback.data.split(":")[1]
+    plan = PLANS.get(plan_key)
+    if not plan or not callback.message:
+        return
+
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer(
+        f"Вы выбрали: *{plan['label']}* — {plan['price']} ₽\n\n"
+        "⏳ Переходим к оплате...",
+        parse_mode="Markdown",
+    )
+    await callback.answer()
 
 
 @router.message(Survey.district)
