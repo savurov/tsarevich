@@ -37,6 +37,14 @@ def execute_script(script):
         connection.executescript(script)
 
 
+def _migrate_add_demo_used():
+    with closing(get_connection()) as connection, connection:
+        try:
+            connection.execute("ALTER TABLE users ADD COLUMN demo_used INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass  # column already exists
+
+
 def init_db():
     execute_script(
         """
@@ -76,6 +84,7 @@ def init_db():
         ON subscriptions(status);
         """
     )
+    _migrate_add_demo_used()
 
 
 def upsert_user(telegram_user):
@@ -201,3 +210,18 @@ def create_subscription(
         ),
     )
     return cursor.lastrowid
+
+
+def has_used_demo(telegram_user_id):
+    row = fetch_one(
+        "SELECT demo_used FROM users WHERE telegram_user_id = ?",
+        (telegram_user_id,),
+    )
+    return bool(row and row["demo_used"])
+
+
+def mark_demo_used(telegram_user_id):
+    execute_write(
+        "UPDATE users SET demo_used = 1 WHERE telegram_user_id = ?",
+        (telegram_user_id,),
+    )
