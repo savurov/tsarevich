@@ -90,7 +90,8 @@ def _normalize_domain_values(place):
 async def _load_places():
     try:
         timeout = aiohttp.ClientTimeout(total=PLACES_REQUEST_TIMEOUT_SECONDS)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        connector = aiohttp.TCPConnector(ssl=False)
+        async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
             async with session.get(SHEET_URL) as resp:
                 resp.raise_for_status()
                 text = await resp.text()
