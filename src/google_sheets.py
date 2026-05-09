@@ -1,5 +1,8 @@
+import asyncio
 import csv
+import html
 import io
+import math
 import re
 from urllib.parse import quote_plus
 
@@ -8,6 +11,7 @@ import aiohttp
 from config import (
     DISTRICTS,
     MAX_ROUTE_PLACES,
+    METRO_COORDS,
     PLACES_REQUEST_TIMEOUT_SECONDS,
     REQUIRED_PLACE_COLUMNS,
     SHEET_URL,
@@ -17,6 +21,29 @@ from config import (
 
 class PlacesLoadError(Exception):
     pass
+
+
+def _haversine_meters(lat1, lon1, lat2, lon2):
+    R = 6_371_000
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(a))
+
+
+async def _geocode_address(session: aiohttp.ClientSession, address: str):
+    url = "https://nominatim.openstreetmap.org/search"
+    params = {"q": f"{address} Санкт-Петербург", "format": "json", "limit": 1}
+    headers = {"User-Agent": "dro4ka-tg-bot/1.0"}
+    try:
+        async with session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+            data = await resp.json()
+            if data:
+                return float(data[0]["lat"]), float(data[0]["lon"])
+    except Exception:
+        pass
+    return None
 
 
 _places_cache = []
@@ -103,7 +130,7 @@ async def _load_places():
     reader = csv.DictReader(io.StringIO(text))
     _validate_columns(reader.fieldnames)
 
-    return [
+    places = [
         _normalize_domain_values(
             _normalize_place(
                 {
@@ -115,6 +142,18 @@ async def _load_places():
         for sheet_row_number, place in enumerate(reader, start=2)
         if any((value or "").strip() for value in place.values())
     ]
+
+    async with aiohttp.ClientSession() as geo_session:
+        for place in places:
+            address = place.get("Адрес", "")
+            if address:
+                coords = await _geocode_address(geo_session, address)
+                place["_coords"] = coords
+            else:
+                place["_coords"] = None
+            await asyncio.sleep(1.1)
+
+    return places
 
 
 async def get_places():
@@ -135,6 +174,29 @@ async def reload_places():
     return places
 
 
+def _sort_walking_route(places, metro):
+    metro_coords = METRO_COORDS.get(metro)
+    with_coords = [p for p in places if p.get("_coords")]
+    without_coords = [p for p in places if not p.get("_coords")]
+
+    if not metro_coords or not with_coords:
+        return places
+
+    current = metro_coords
+    remaining = list(with_coords)
+    route = []
+    while remaining:
+        nearest = min(
+            remaining,
+            key=lambda p: _haversine_meters(current[0], current[1], p["_coords"][0], p["_coords"][1]),
+        )
+        route.append(nearest)
+        current = nearest["_coords"]
+        remaining.remove(nearest)
+
+    return route + without_coords
+
+
 def filter_places(places, metro, theme_key):
     theme_val = THEMES.get(theme_key)
     result = []
@@ -147,6 +209,7 @@ def filter_places(places, metro, theme_key):
             result.append(place)
         elif theme_val in place_class:
             result.append(place)
+    result = _sort_walking_route(result, metro)
     return result[:MAX_ROUTE_PLACES]
 
 
@@ -173,20 +236,20 @@ def get_available_themes(places, metro):
 def format_route(places, metro, theme):
     text = f"🗺 {theme} · {metro}\n\n"
     for index, place in enumerate(places, 1):
-        name = place.get("Название", "")
-        address = place.get("Адрес", "")
-        description = place.get("Описание", "")
+        name = html.escape(place.get("Название", ""))
+        address = html.escape(place.get("Адрес", ""))
+        description = html.escape(place.get("Описание", ""))
         check = place.get("Чек", "")
-        maps_query = quote_plus(f"{address} Санкт-Петербург")
+        maps_query = quote_plus(f"{place.get('Адрес', '')} Санкт-Петербург")
         maps_url = f"https://yandex.ru/maps/?text={maps_query}"
         text += f"📍 {index}. {name}\n"
         text += f"🏠 {address}\n"
         if check and check.strip().lower() == "бесплатно":
             text += "💚 Бесплатно\n"
         elif check and check.strip():
-            text += f"💰 {check}\n"
+            text += f"💰 {html.escape(check)}\n"
         text += f"{description}\n"
-        text += f"🗺 {maps_url}\n\n"
+        text += f'🗺 <a href="{maps_url}">посмотреть на карте</a>\n\n'
         text += "—" * 20 + "\n\n"
     return text
 

@@ -217,7 +217,7 @@ async def handle_theme(message: types.Message, state: FSMContext):
         return
 
     route = format_route(selected, metro, theme)
-    await message.answer(route, reply_markup=types.ReplyKeyboardRemove())
+    await message.answer(route, reply_markup=types.ReplyKeyboardRemove(), parse_mode="HTML")
     await asyncio.sleep(0.3)
 
     is_demo = data.get("is_demo", False)
