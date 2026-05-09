@@ -4,7 +4,6 @@ import html
 import io
 import math
 import re
-from urllib.parse import quote_plus
 
 import aiohttp
 
@@ -246,16 +245,13 @@ def format_route(places, metro, theme):
         address = html.escape(place.get("Адрес", ""))
         description = html.escape(place.get("Описание", ""))
         check = place.get("Чек", "")
-        maps_query = quote_plus(f"{place.get('Адрес', '')} Санкт-Петербург")
-        maps_url = f"https://yandex.ru/maps/?text={maps_query}"
         text += f"📍 {index}. {name}\n"
         text += f"🏠 {address}\n"
         if check and check.strip().lower() == "бесплатно":
             text += "💚 Бесплатно\n"
         elif check and check.strip():
             text += f"💰 {html.escape(check)}\n"
-        text += f"{description}\n"
-        text += f'🗺 <a href="{maps_url}">посмотреть на карте</a>\n\n'
+        text += f"{description}\n\n"
         text += "—" * 20 + "\n\n"
     return text
 
