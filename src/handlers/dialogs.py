@@ -211,10 +211,14 @@ async def handle_theme(message: types.Message, state: FSMContext):
     if places is None:
         return
 
-    selected = filter_places(places, metro, theme)
+    shown_ids = set(data.get("shown_place_ids", []))
+    selected = filter_places(places, metro, theme, exclude_ids=shown_ids)
     if not selected:
         await message.answer("😔 По этой теме пока нет мест у этой станции.")
         return
+
+    new_shown_ids = shown_ids | {p.get("_sheet_row_number") for p in selected}
+    await state.update_data(shown_place_ids=list(new_shown_ids))
 
     route = format_route(selected, metro, theme)
     await message.answer(route, reply_markup=types.ReplyKeyboardRemove(), parse_mode="HTML")

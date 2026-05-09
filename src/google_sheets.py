@@ -197,7 +197,7 @@ def _sort_walking_route(places, metro):
     return route + without_coords
 
 
-def filter_places(places, metro, theme_key):
+def filter_places(places, metro, theme_key, exclude_ids=None):
     theme_val = THEMES.get(theme_key)
     result = []
     for place in places:
@@ -209,6 +209,12 @@ def filter_places(places, metro, theme_key):
             result.append(place)
         elif theme_val in place_class:
             result.append(place)
+
+    if exclude_ids:
+        fresh = [p for p in result if p.get("_sheet_row_number") not in exclude_ids]
+        if fresh:
+            result = fresh
+
     result = _sort_walking_route(result, metro)
     return result[:MAX_ROUTE_PLACES]
 
