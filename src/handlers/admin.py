@@ -7,7 +7,7 @@ from aiogram.fsm.context import FSMContext
 
 from db import (
     execute_query,
-    get_all_subscriptions,
+    get_all_payments,
     get_all_users,
     get_table_columns,
     is_admin_user,
@@ -123,13 +123,13 @@ async def handle_admin_export(message: types.Message):
         return
 
     users = get_all_users()
-    subscriptions = get_all_subscriptions()
+    payments = get_all_payments()
     users_columns = get_table_columns("users")
-    subscriptions_columns = get_table_columns("subscriptions")
+    payments_columns = get_table_columns("payments")
 
     await message.answer_document(build_csv_file("users", users_columns, users))
     await message.answer_document(
-        build_csv_file("subscriptions", subscriptions_columns, subscriptions)
+        build_csv_file("payments", payments_columns, payments)
     )
     await message.answer("CSV выгружены.", reply_markup=get_admin_keyboard())
 

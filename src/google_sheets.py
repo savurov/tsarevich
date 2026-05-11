@@ -46,6 +46,8 @@ async def _geocode_address(session: aiohttp.ClientSession, address: str):
 
 
 _places_cache = []
+_coords_cache = {}
+_coords_task = None
 
 
 def _normalize_place(raw_place):
@@ -142,17 +144,35 @@ async def _load_places():
         if any((value or "").strip() for value in place.values())
     ]
 
+    return places
+
+
+async def _enrich_places_with_coords(places):
     async with aiohttp.ClientSession() as geo_session:
         for place in places:
             address = place.get("Адрес", "")
-            if address:
-                coords = await _geocode_address(geo_session, address)
-                place["_coords"] = coords
-            else:
+            if not address:
                 place["_coords"] = None
-            await asyncio.sleep(1.1)
+                continue
 
-    return places
+            if address not in _coords_cache:
+                _coords_cache[address] = await _geocode_address(geo_session, address)
+                await asyncio.sleep(1.1)
+
+            place["_coords"] = _coords_cache[address]
+
+
+def schedule_places_geocoding(places=None):
+    global _coords_task
+
+    if places is None:
+        places = _places_cache
+
+    if _coords_task and not _coords_task.done():
+        _coords_task.cancel()
+
+    _coords_task = asyncio.create_task(_enrich_places_with_coords(places))
+    return _coords_task
 
 
 async def get_places():
@@ -170,6 +190,7 @@ async def reload_places():
 
     places = await _load_places()
     _places_cache = places
+    schedule_places_geocoding(places)
     return places
 
 
