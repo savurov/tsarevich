@@ -6,6 +6,7 @@ from pathlib import Path
 from config import DATABASE_PATH
 
 DB_FILE = Path(DATABASE_PATH)
+MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations"
 
 
 def get_connection():
@@ -38,58 +39,63 @@ def execute_script(script):
         connection.executescript(script)
 
 
-def init_db():
+def ensure_migrations_table():
     execute_script(
         """
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            telegram_user_id INTEGER NOT NULL UNIQUE,
-            username TEXT,
-            first_name TEXT,
-            last_name TEXT,
-            language_code TEXT,
-            is_admin INTEGER NOT NULL DEFAULT 0,
-            demo_used INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        CREATE TABLE IF NOT EXISTS migrations (
+            name TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
-
-        CREATE TABLE IF NOT EXISTS payments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-
-            plan_code TEXT NOT NULL,
-            currency TEXT NOT NULL,
-            total_amount INTEGER NOT NULL,
-
-            telegram_payment_charge_id TEXT NOT NULL UNIQUE,
-            provider_payment_charge_id TEXT NOT NULL,
-
-            started_at TEXT NOT NULL,
-            expires_at TEXT NOT NULL,
-
-            subscription_expiration_date TEXT,
-            is_recurring INTEGER,
-            is_first_recurring INTEGER,
-
-            raw_payload_json TEXT,
-
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-            UNIQUE(telegram_payment_charge_id)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_payments_user_id
-        ON payments(user_id);
-
-        CREATE INDEX IF NOT EXISTS idx_payments_expires_at
-        ON payments(expires_at);
-
-        CREATE INDEX IF NOT EXISTS idx_payments_user_expires_at
-        ON payments(user_id, expires_at);
         """
     )
+
+
+def get_applied_migration_names():
+    rows = fetch_all(
+        """
+        SELECT name
+        FROM migrations
+        ORDER BY name ASC
+        """
+    )
+    return {row["name"] for row in rows}
+
+
+def get_migration_files():
+    migration_files = sorted(MIGRATIONS_DIR.glob("*.sql"))
+    names = [path.name for path in migration_files]
+    if not migration_files:
+        raise ValueError(f"No migration files found in {MIGRATIONS_DIR}")
+    if len(names) != len(set(names)):
+        raise ValueError("Duplicate migration file names found")
+    return migration_files
+
+
+def apply_migration(path):
+    sql = path.read_text(encoding="utf-8")
+    with closing(get_connection()) as connection, connection:
+        connection.executescript(sql)
+        connection.execute(
+            """
+            INSERT INTO migrations (name)
+            VALUES (?)
+            """,
+            (path.name,),
+        )
+
+
+def run_migrations():
+    ensure_migrations_table()
+    applied_migration_names = get_applied_migration_names()
+
+    for path in get_migration_files():
+        if path.name in applied_migration_names:
+            continue
+        apply_migration(path)
+
+
+def init_db():
+    run_migrations()
 
 
 def upsert_user(telegram_user):
@@ -148,7 +154,7 @@ def get_all_users():
         """
         SELECT *
         FROM users
-        ORDER BY created_at DESC, id DESC
+        ORDER BY created_at DESC, telegram_user_id DESC
         """
     )
 
@@ -177,7 +183,7 @@ def execute_query(query):
 
 
 def create_payment(
-    user_id,
+    telegram_user_id,
     plan_code,
     currency,
     total_amount,
@@ -193,7 +199,7 @@ def create_payment(
     cursor = execute_write(
         """
         INSERT INTO payments (
-            user_id,
+            telegram_user_id,
             plan_code,
             currency,
             total_amount,
@@ -209,7 +215,7 @@ def create_payment(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            user_id,
+            telegram_user_id,
             plan_code,
             currency,
             total_amount,
@@ -242,8 +248,7 @@ def get_active_payment(telegram_user_id):
         """
         SELECT p.*
         FROM payments p
-        JOIN users u ON u.id = p.user_id
-        WHERE u.telegram_user_id = ?
+        WHERE p.telegram_user_id = ?
           AND p.expires_at > CURRENT_TIMESTAMP
         ORDER BY p.expires_at DESC, p.id DESC
         LIMIT 1
@@ -273,8 +278,7 @@ def record_successful_payment(
     if existing:
         return existing["id"]
 
-    user = get_user_by_telegram_id(telegram_user_id)
-    if not user:
+    if not get_user_by_telegram_id(telegram_user_id):
         raise ValueError(f"User {telegram_user_id} not found")
 
     now = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
@@ -289,7 +293,7 @@ def record_successful_payment(
     expires_at = (base_time + timedelta(days=duration_days)).strftime("%Y-%m-%d %H:%M:%S")
 
     return create_payment(
-        user_id=user["id"],
+        telegram_user_id=telegram_user_id,
         plan_code=plan_code,
         currency=currency,
         total_amount=total_amount,

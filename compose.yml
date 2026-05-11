@@ -10,4 +10,5 @@ services:
       DATABASE_PATH: /data/database.sqlite3
     volumes:
       - ./src:/app/src
+      - ./migrations:/app/migrations
       - ./data:/data

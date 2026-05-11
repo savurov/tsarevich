@@ -5,7 +5,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import TOKEN
-from db import init_db
+from db import run_migrations
 from handlers.admin import router as admin_router
 from handlers.dialogs import router as dialogs_router
 from handlers.payments import router as payments_router
@@ -22,7 +22,8 @@ dp = Dispatcher(storage=MemoryStorage())
 async def main():
     log_event(logger, logging.INFO, "Starting bot")
     try:
-        init_db()
+        run_migrations()
+        log_event(logger, logging.INFO, "Migrations applied")
         places = await reload_places()
         log_event(logger, logging.INFO, "Places loaded", places_count=len(places))
     except Exception as exc:

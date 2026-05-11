@@ -105,8 +105,8 @@ async def handle_demo_start(callback: types.CallbackQuery, state: FSMContext):
     if not isinstance(callback.message, types.Message):
         return
 
-    user_id = callback.from_user.id if callback.from_user else None
-    if user_id and has_used_demo(user_id) and not is_admin_user(user_id):
+    telegram_user_id = callback.from_user.id if callback.from_user else None
+    if telegram_user_id and has_used_demo(telegram_user_id) and not is_admin_user(telegram_user_id):
         await callback.message.answer(
             "Вы уже использовали демо-доступ.\n\nВыберите тариф для продолжения:",
             reply_markup=build_payment_keyboard(),
