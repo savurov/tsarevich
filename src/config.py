@@ -23,7 +23,11 @@ def get_database_path():
 TOKEN = get_required_env("TOKEN")
 SHEET_ID = get_required_env("SHEET_ID")
 PAYMENT_PROVIDER_TOKEN = get_required_env("PAYMENT_PROVIDER_TOKEN")
-SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv"
+SHEET_URL = (
+    f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=419935683"
+)
+
+
 DATABASE_PATH = get_database_path()
 PAYMENT_CURRENCY = "RUB"
 PAYMENT_VAT_CODE = 1

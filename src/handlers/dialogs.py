@@ -13,7 +13,6 @@ from db import (
     upsert_user,
 )
 from google_sheets import (
-    PlacesLoadError,
     filter_places,
     format_route,
     get_available_themes,
@@ -23,7 +22,6 @@ from handlers.payments import build_payment_keyboard, show_payment_screen
 from handlers.states import Survey
 
 router = Router()
-PLACES_ERROR_TEXT = "Не удалось загрузить места из таблицы. Попробуйте чуть позже."
 SAME_STATION_TEXT = "📍 Та же станция"
 CHANGE_STATION_TEXT = "🔀 Сменить станцию"
 BACK_TO_START_TEXT = "🏠 В начало"
@@ -56,11 +54,7 @@ async def reset_to_start(message: types.Message, state: FSMContext):
 
 
 async def load_places_or_notify(message: types.Message):
-    try:
-        return await get_places()
-    except PlacesLoadError:
-        await message.answer(PLACES_ERROR_TEXT)
-        return None
+    return await get_places()
 
 
 async def show_district_menu(

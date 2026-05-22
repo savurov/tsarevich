@@ -3,7 +3,10 @@ import csv
 import html
 import io
 import math
+import os
 import re
+import traceback
+from dataclasses import dataclass
 
 import aiohttp
 
@@ -20,6 +23,24 @@ from config import (
 
 class PlacesLoadError(Exception):
     pass
+
+
+@dataclass
+class PlacesLoadStatus:
+    source: str
+    error_message: str | None = None
+    error_details: str | None = None
+    places_count: int = 0
+
+    @property
+    def has_error(self):
+        return self.error_message is not None
+
+    @property
+    def has_fallback(self):
+        return self.source == "disk_cache" or (
+            self.source == "memory_cache" and self.has_error
+        )
 
 
 def _haversine_meters(lat1, lon1, lat2, lon2):
@@ -48,6 +69,30 @@ async def _geocode_address(session: aiohttp.ClientSession, address: str):
 _places_cache = []
 _coords_cache = {}
 _coords_task = None
+_places_status = PlacesLoadStatus(source="empty", places_count=0)
+
+
+def _get_places_cache_path():
+    from config import DATABASE_PATH
+
+    return os.path.join(os.path.dirname(DATABASE_PATH) or ".", "places_cache.csv")
+
+
+def _copy_places(places):
+    return [dict(place) for place in places]
+
+
+def _format_exception_details(exc):
+    summary = f"{type(exc).__name__}: {exc}"
+    details = []
+    root_cause = exc.__cause__ or exc
+    for line in traceback.format_exception_only(type(root_cause), root_cause):
+        cleaned = line.strip()
+        if cleaned and cleaned not in details:
+            details.append(cleaned)
+    if summary not in details:
+        details.insert(0, summary)
+    return "\n".join(details[:3])
 
 
 def _normalize_place(raw_place):
@@ -115,23 +160,11 @@ def _normalize_domain_values(place):
     return normalized_place
 
 
-async def _load_places():
-    try:
-        timeout = aiohttp.ClientTimeout(total=PLACES_REQUEST_TIMEOUT_SECONDS)
-        connector = aiohttp.TCPConnector(ssl=False)
-        async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
-            async with session.get(SHEET_URL) as resp:
-                resp.raise_for_status()
-                text = await resp.text()
-    except aiohttp.ClientError as exc:
-        raise PlacesLoadError("Failed to load places from Google Sheets") from exc
-    except TimeoutError as exc:
-        raise PlacesLoadError("Google Sheets request timed out") from exc
-
+def _parse_places_csv(text):
     reader = csv.DictReader(io.StringIO(text))
     _validate_columns(reader.fieldnames)
 
-    places = [
+    return [
         _normalize_domain_values(
             _normalize_place(
                 {
@@ -144,7 +177,56 @@ async def _load_places():
         if any((value or "").strip() for value in place.values())
     ]
 
-    return places
+
+async def fetch_places_from_source():
+    try:
+        timeout = aiohttp.ClientTimeout(total=PLACES_REQUEST_TIMEOUT_SECONDS)
+        connector = aiohttp.TCPConnector(ssl=False)
+        async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+            async with session.get(SHEET_URL) as resp:
+                resp.raise_for_status()
+                text = await resp.text()
+    except aiohttp.ClientError as exc:
+        raise PlacesLoadError("Failed to load places from Google Sheets") from exc
+    except TimeoutError as exc:
+        raise PlacesLoadError("Google Sheets request timed out") from exc
+
+    return _parse_places_csv(text)
+
+
+def load_places_from_disk_cache():
+    cache_path = _get_places_cache_path()
+    try:
+        with open(cache_path, encoding="utf-8", newline="") as cache_file:
+            return _parse_places_csv(cache_file.read())
+    except FileNotFoundError as exc:
+        raise PlacesLoadError("No saved places cache found") from exc
+    except OSError as exc:
+        raise PlacesLoadError("Failed to read saved places cache") from exc
+
+
+def save_places_to_disk_cache(places):
+    cache_path = _get_places_cache_path()
+    directory = os.path.dirname(cache_path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+    fieldnames = []
+    for place in places:
+        for key in place.keys():
+            if key not in fieldnames and key != "_coords":
+                fieldnames.append(key)
+    for column in REQUIRED_PLACE_COLUMNS:
+        if column not in fieldnames:
+            fieldnames.append(column)
+
+    temp_path = f"{cache_path}.tmp"
+    with open(temp_path, "w", encoding="utf-8", newline="") as cache_file:
+        writer = csv.DictWriter(cache_file, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for place in places:
+            writer.writerow(place)
+    os.replace(temp_path, cache_path)
 
 
 async def _enrich_places_with_coords(places):
@@ -176,8 +258,6 @@ def schedule_places_geocoding(places=None):
 
 
 async def get_places():
-    if not _places_cache:
-        raise PlacesLoadError("Places cache is empty. Load data before handling requests")
     return _places_cache
 
 
@@ -185,13 +265,72 @@ def get_places_count():
     return len(_places_cache)
 
 
-async def reload_places():
-    global _places_cache
+def get_places_load_status():
+    return PlacesLoadStatus(
+        source=_places_status.source,
+        error_message=_places_status.error_message,
+        error_details=_places_status.error_details,
+        places_count=_places_status.places_count,
+    )
 
-    places = await _load_places()
-    _places_cache = places
-    schedule_places_geocoding(places)
-    return places
+
+def _set_places_state(places, source, error_message=None, error_details=None):
+    global _places_cache, _places_status
+
+    _places_cache = _copy_places(places)
+    _places_status = PlacesLoadStatus(
+        source=source,
+        error_message=error_message,
+        error_details=error_details,
+        places_count=len(_places_cache),
+    )
+    schedule_places_geocoding(_places_cache)
+    return _places_cache
+
+
+async def reload_places():
+    try:
+        places = await fetch_places_from_source()
+    except PlacesLoadError as exc:
+        error_details = _format_exception_details(exc)
+        if _places_cache:
+            places = _set_places_state(
+                _places_cache,
+                "memory_cache",
+                error_message=str(exc),
+                error_details=error_details,
+            )
+            return places, get_places_load_status()
+
+        try:
+            cached_places = load_places_from_disk_cache()
+        except PlacesLoadError:
+            places = _set_places_state(
+                [],
+                "empty",
+                error_message=str(exc),
+                error_details=error_details,
+            )
+            return places, get_places_load_status()
+
+        places = _set_places_state(
+            cached_places,
+            "disk_cache",
+            error_message=str(exc),
+            error_details=error_details,
+        )
+        return places, get_places_load_status()
+
+    try:
+        save_places_to_disk_cache(places)
+    except OSError:
+        pass
+    places = _set_places_state(places, "google_sheets")
+    return places, get_places_load_status()
+
+
+async def initialize_places():
+    return await reload_places()
 
 
 def _sort_walking_route(places, metro):

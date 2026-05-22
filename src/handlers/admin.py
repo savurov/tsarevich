@@ -1,5 +1,6 @@
 import csv
 import io
+import textwrap
 
 from aiogram import Router, types
 from aiogram.filters import Command
@@ -14,7 +15,6 @@ from db import (
 )
 from handlers.dialogs import build_keyboard, show_district_menu
 from google_sheets import (
-    PlacesLoadError,
     get_places_count,
     reload_places,
     validate_places,
@@ -22,7 +22,6 @@ from google_sheets import (
 
 router = Router()
 
-PLACES_ERROR_TEXT = "Не удалось загрузить места из таблицы. Попробуйте чуть позже."
 ADMIN_ACCESS_TEXT = "Эта команда доступна только администратору."
 ADMIN_MENU_TEXT = "🏳️‍🌈🦄✨  A D M I N K A  ✨🦄🏳️‍🌈"
 ADMIN_RELOAD_TEXT = "Обновить данные"
@@ -69,10 +68,36 @@ def build_csv_file(table_name, columns, rows):
     )
 
 
-def format_reload_result(old_count, new_count, warnings):
+def _format_status_source(source):
+    if source == "google_sheets":
+        return "Google Sheets"
+    if source == "disk_cache":
+        return "сохраненный кэш на диске"
+    if source == "memory_cache":
+        return "текущие данные в памяти"
+    return "пустой набор данных"
+
+
+def _truncate_error_details(error_details, limit=500):
+    if not error_details:
+        return ""
+    cleaned = "\n".join(line.strip() for line in error_details.splitlines() if line.strip())
+    return textwrap.shorten(cleaned.replace("\n", " | "), width=limit, placeholder="...")
+
+
+def format_reload_result(old_count, new_count, warnings, status):
     text = (
-        f"✨ Обновление таблицы завершено\n📦 Было: {old_count}\n🆕 Стало: {new_count}"
+        f"✨ Обновление таблицы завершено\n📦 Было: {old_count}\n🆕 Стало: {new_count}\n🗃 Источник: {_format_status_source(status.source)}"
     )
+    if status.has_error:
+        if new_count > 0:
+            text += (
+                "\n\n⚠️ Google Sheets не обновились. "
+                f"Оставили рабочие данные: {new_count} мест."
+            )
+        else:
+            text += "\n\n⚠️ Google Sheets не обновились. Сейчас бот работает с пустыми данными."
+
     if not warnings:
         return f"{text}\n\n✅ Подозрительных строк не найдено."
 
@@ -84,6 +109,23 @@ def format_reload_result(old_count, new_count, warnings):
             f"   ↳ {warning['value']}"
         )
     return "\n".join(lines)
+
+
+def format_reload_error(status):
+    lines = ["Ой ой ой, ошибка! Данные не загрузились!"]
+    if status.source == "memory_cache" and status.places_count > 0:
+        lines.append(f"Продолжаю работать на предыдущих данных: {status.places_count} мест.")
+    elif status.source == "disk_cache" and status.places_count > 0:
+        lines.append(f"Поднял последнюю сохраненную версию: {status.places_count} мест.")
+    else:
+        lines.append("Старых данных нет, поэтому запросы по местам сейчас будут пустыми.")
+
+    if status.error_message:
+        lines.append(f"Причина: {status.error_message}")
+    error_details = _truncate_error_details(status.error_details)
+    if error_details:
+        lines.append(f"Техподробность: {error_details}")
+    return "\n\n".join(lines)
 
 
 @router.message(Command("admin"))
@@ -102,18 +144,20 @@ async def handle_admin_reload(message: types.Message):
         return
 
     old_count = get_places_count()
-    try:
-        places = await reload_places()
-    except PlacesLoadError:
-        await message.answer(PLACES_ERROR_TEXT, reply_markup=get_admin_keyboard())
+    places, status = await reload_places()
+    if status.has_error:
+        await message.answer(
+            format_reload_error(status),
+            reply_markup=get_admin_keyboard(),
+        )
         return
 
     warnings = validate_places(places)
     await send_text_in_chunks(
         message,
-        format_reload_result(old_count, len(places), warnings),
+        format_reload_result(old_count, len(places), warnings, status),
     )
-    # await message.answer("Готово.", reply_markup=get_admin_keyboard())
+    await message.answer("Готово.", reply_markup=get_admin_keyboard())
 
 
 @router.message(lambda message: message.text == ADMIN_EXPORT_TEXT)
