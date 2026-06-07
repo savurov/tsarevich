@@ -218,7 +218,7 @@ async def handle_theme(message: types.Message, state: FSMContext):
 
     route = format_route(selected, metro, theme)
     await message.answer(
-        route, reply_markup=types.ReplyKeyboardRemove(), parse_mode="HTML"
+        route, reply_markup=types.ReplyKeyboardRemove(), parse_mode="HTML", disable_web_page_preview=True
     )
     await asyncio.sleep(0.3)
 

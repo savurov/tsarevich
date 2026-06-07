@@ -6,6 +6,7 @@ import math
 import os
 import re
 import traceback
+import urllib.parse
 from dataclasses import dataclass
 
 import aiohttp
@@ -400,19 +401,23 @@ def get_available_themes(places, metro):
 
 def format_route(places, metro, theme):
     text = f"🗺 {theme} · {metro}\n\n"
-    for index, place in enumerate(places, 1):
+    for place in places:
         name = html.escape(place.get("Название", ""))
-        address = html.escape(place.get("Адрес", ""))
+        address_raw = place.get("Адрес", "")
+        address = html.escape(address_raw)
         description = html.escape(place.get("Описание", ""))
         check = place.get("Чек", "")
-        text += f"📍 {index}. {name}\n"
-        text += f"🏠 {address}\n"
-        if check and check.strip().lower() == "бесплатно":
-            text += "💚 Бесплатно\n"
-        elif check and check.strip():
+        coords = place.get("_coords")
+        if coords:
+            map_url = f"https://yandex.ru/maps/?ll={coords[1]},{coords[0]}&pt={coords[1]},{coords[0]}&z=17"
+        else:
+            map_url = f"https://yandex.ru/maps/?text={urllib.parse.quote(address_raw)}"
+        text += f"<b>{name}</b>\n"
+        text += f"📍 <i>{address}</i> <a href=\"{map_url}\">на карте</a>\n"
+        if check and check.strip():
             text += f"💰 {html.escape(check)}\n"
         text += f"{description}\n\n"
-        text += "—" * 20 + "\n\n"
+        text += "\n"
     return text
 
 
