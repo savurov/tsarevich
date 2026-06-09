@@ -49,10 +49,11 @@ AFTER_ROUTE_OPTIONS = [
 ]
 
 DEMO_ROUTES_LIMIT = 2
+BACK_TEXT = "← Назад"
 INACTIVE_METRO_PREFIX = "🙅 "
 
 
-def build_keyboard(buttons, row_width=2):
+def build_keyboard(buttons, row_width=2, nav_buttons=None):
     keyboard = []
     row = []
     for button in buttons:
@@ -62,6 +63,8 @@ def build_keyboard(buttons, row_width=2):
             row = []
     if row:
         keyboard.append(row)
+    if nav_buttons:
+        keyboard.append([types.KeyboardButton(text=b) for b in nav_buttons])
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
 
@@ -79,8 +82,7 @@ async def build_metros_keyboard(metros):
         metros_display.append(
             metro if has_places else f"{INACTIVE_METRO_PREFIX}{metro}"
         )
-    metros_display.append(BACK_TO_START_TEXT)
-    return build_keyboard(metros_display, row_width=1)
+    return build_keyboard(metros_display, row_width=1, nav_buttons=[BACK_TEXT, BACK_TO_START_TEXT])
 
 
 async def reset_to_start(message: types.Message, state: FSMContext):
@@ -175,7 +177,7 @@ async def show_district_menu(
         await state.update_data(is_demo=True, demo_routes_left=demo_routes_left)
     await message.answer(
         "Выберите район Петербурга:",
-        reply_markup=build_keyboard(list(DISTRICTS.keys()), row_width=1),
+        reply_markup=build_keyboard(list(DISTRICTS.keys()), row_width=1, nav_buttons=[BACK_TO_START_TEXT]),
     )
 
 
@@ -327,8 +329,7 @@ async def handle_metro(message: types.Message, state: FSMContext):
         await reset_to_start(message, state)
         return
 
-    if message.text == BACK_TO_START_TEXT:
-        data = await state.get_data()
+    if message.text == BACK_TEXT:
         is_demo = data.get("is_demo", False)
         demo_routes_left = data.get("demo_routes_left", 0)
         await show_district_menu(
@@ -355,7 +356,7 @@ async def handle_metro(message: types.Message, state: FSMContext):
 
     await message.answer(
         f"Станция: *{metro}*\n\nЧто вас интересует?",
-        reply_markup=build_keyboard(available, row_width=2),
+        reply_markup=build_keyboard(available, row_width=2, nav_buttons=[BACK_TEXT, BACK_TO_START_TEXT]),
         parse_mode="Markdown",
     )
     await state.set_state(Survey.theme)
@@ -363,13 +364,27 @@ async def handle_metro(message: types.Message, state: FSMContext):
 
 @protected_router.message(Survey.theme)
 async def handle_theme(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    district = data.get("district")
+    metro = data.get("metro")
+
+    if message.text == BACK_TEXT:
+        if not district or district not in DISTRICTS:
+            await reset_to_start(message, state)
+            return
+        await message.answer(
+            f"Район: *{district}*\n\nВыберите ближайшую станцию метро:",
+            reply_markup=await build_metros_keyboard(DISTRICTS[district]),
+            parse_mode="Markdown",
+        )
+        await state.set_state(Survey.metro)
+        return
+
     theme = message.text
     if theme not in THEMES:
         await message.answer("Пожалуйста выберите тему из списка 👇")
         return
 
-    data = await state.get_data()
-    metro = data.get("metro")
     if not metro:
         await reset_to_start(message, state)
         return
