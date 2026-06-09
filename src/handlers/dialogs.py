@@ -6,6 +6,7 @@ from aiogram.fsm.context import FSMContext
 
 from config import DISTRICTS, THEMES
 from db import (
+    get_active_payment,
     has_active_subscription,
     has_used_demo,
     is_admin_user,
@@ -13,14 +14,15 @@ from db import (
     upsert_user,
 )
 from google_sheets import (
+    ensure_places_loaded,
     filter_places,
     format_route,
     get_available_themes,
-    get_places,
 )
 from handlers.middlewares import SubscriptionRequiredMiddleware
 from handlers.payments import build_payment_keyboard, show_payment_screen
 from handlers.states import Survey
+from time_utils import format_utc_timestamp_msk
 
 router = Router()
 public_router = Router()
@@ -31,6 +33,15 @@ SAME_STATION_TEXT = "📍 Та же станция"
 CHANGE_STATION_TEXT = "🔀 Сменить станцию"
 BACK_TO_START_TEXT = "🏠 В начало"
 START_BUTTON_TEXT = "Начать"
+ROUTE_MENU_TEXT = "🗺 Подобрать маршрут"
+SUBSCRIPTION_MENU_TEXT = "💳 Подписка"
+HELP_MENU_TEXT = "❓ Помощь"
+ADMIN_MENU_BUTTON_TEXT = "⚙️ Админка"
+MAIN_MENU_BUTTONS = [
+    ROUTE_MENU_TEXT,
+    SUBSCRIPTION_MENU_TEXT,
+    HELP_MENU_TEXT,
+]
 AFTER_ROUTE_OPTIONS = [
     SAME_STATION_TEXT,
     CHANGE_STATION_TEXT,
@@ -56,28 +67,100 @@ def build_keyboard(buttons, row_width=2):
 
 def normalize_metro_input(text):
     if text and text.startswith(INACTIVE_METRO_PREFIX):
-        return text[len(INACTIVE_METRO_PREFIX):]
+        return text[len(INACTIVE_METRO_PREFIX) :]
     return text
 
 
 async def build_metros_keyboard(metros):
-    from google_sheets import get_places
-    places = await get_places()
+    places = await ensure_places_loaded()
     metros_display = []
     for metro in metros:
         has_places = any(p.get("Метро") == metro for p in places)
-        metros_display.append(metro if has_places else f"{INACTIVE_METRO_PREFIX}{metro}")
+        metros_display.append(
+            metro if has_places else f"{INACTIVE_METRO_PREFIX}{metro}"
+        )
     metros_display.append(BACK_TO_START_TEXT)
     return build_keyboard(metros_display, row_width=1)
 
 
 async def reset_to_start(message: types.Message, state: FSMContext):
-    await message.answer("Сессия сбросилась. Давайте начнём заново.")
-    await show_district_menu(message, state)
+    await message.answer("Сессия сбросилась.")
+    await show_main_menu(message, state)
 
 
 async def load_places_or_notify(message: types.Message):
-    return await get_places()
+    places = await ensure_places_loaded()
+    if not places:
+        await message.answer("Данные по местам пока не загрузились. Попробуйте ещё раз чуть позже.")
+        return None
+    return places
+
+
+def _format_subscription_text(telegram_user_id):
+    active_payment = get_active_payment(telegram_user_id)
+    if active_payment:
+        expires_at = format_utc_timestamp_msk(active_payment["expires_at"])
+        return f"Подписка активна до {expires_at}."
+
+    if has_used_demo(telegram_user_id):
+        return "Подписки нет. Demo уже использовано."
+
+    return f"Подписки нет. Demo доступно: {DEMO_ROUTES_LIMIT} маршрута."
+
+
+async def show_main_menu(
+    message: types.Message,
+    state: FSMContext,
+    is_demo: bool = False,
+    demo_routes_left: int = 0,
+):
+    await state.clear()
+    if is_demo:
+        await state.update_data(is_demo=True, demo_routes_left=demo_routes_left)
+    buttons = list(MAIN_MENU_BUTTONS)
+    if message.from_user and is_admin_user(message.from_user.id):
+        buttons.append(ADMIN_MENU_BUTTON_TEXT)
+    await message.answer(
+        "Главное меню",
+        reply_markup=build_keyboard(buttons, row_width=1),
+    )
+
+
+async def show_subscription_status(message: types.Message, state: FSMContext):
+    if not message.from_user:
+        await show_payment_screen(message, state)
+        return
+
+    text = _format_subscription_text(message.from_user.id)
+    if is_admin_user(message.from_user.id) or has_active_subscription(
+        message.from_user.id
+    ):
+        await message.answer(
+            f"{text}\n\nМожно строить маршруты.",
+            reply_markup=build_keyboard(
+                [ROUTE_MENU_TEXT, BACK_TO_START_TEXT], row_width=1
+            ),
+        )
+        return
+
+    await message.answer(text, reply_markup=types.ReplyKeyboardRemove())
+    await show_payment_screen(message, state)
+
+
+async def show_help(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "Как это работает:\n\n"
+        "1. Выберите район, метро и тему.\n"
+        "2. Я пришлю подборку мест с адресами и описаниями.\n"
+        f"3. Demo дает {DEMO_ROUTES_LIMIT} маршрута, потом нужен тариф.\n\n"
+        "Если Telegram показал ошибку оплаты, значит деньги не списались. "
+        "Вернитесь в «Подписка» и откройте новый счет.\n\n"
+        "Если что-то пошло не так, напишите мне: @anastasiiatsa",
+        reply_markup=build_keyboard(
+            [ROUTE_MENU_TEXT, SUBSCRIPTION_MENU_TEXT, BACK_TO_START_TEXT], row_width=1
+        ),
+    )
 
 
 async def show_district_menu(
@@ -100,12 +183,10 @@ async def show_district_menu(
 async def cmd_start(message: types.Message, state: FSMContext):
     if message.from_user:
         upsert_user(message.from_user)
-    await state.clear()
-    await state.set_state(Survey.welcome)
     await message.answer(
-        "Привет! 👋\n\nЯ помогу найти интересные места в Петербурге рядом с тобой.",
-        reply_markup=build_keyboard([START_BUTTON_TEXT], row_width=1),
+        "Привет! Я помогу найти интересные места в Петербурге рядом с тобой."
     )
+    await show_main_menu(message, state)
 
 
 @public_router.message(Command("cancel", "restart"))
@@ -114,34 +195,75 @@ async def cmd_cancel(message: types.Message, state: FSMContext):
         upsert_user(message.from_user)
     await state.clear()
     await message.answer("Ок, начнем заново.")
-    await cmd_start(message, state)
+    await show_main_menu(message, state)
 
 
-@public_router.message(F.text == START_BUTTON_TEXT)
+@public_router.message(F.text.in_({START_BUTTON_TEXT, BACK_TO_START_TEXT}))
 async def handle_start_button(message: types.Message, state: FSMContext):
     if message.from_user:
         upsert_user(message.from_user)
-        if is_admin_user(message.from_user.id) or has_active_subscription(message.from_user.id):
+    await show_main_menu(message, state)
+
+
+@public_router.message(F.text == ROUTE_MENU_TEXT)
+async def handle_route_menu(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    if data.get("is_demo"):
+        await show_district_menu(
+            message,
+            state,
+            is_demo=True,
+            demo_routes_left=data.get("demo_routes_left", 0),
+        )
+        return
+
+    if message.from_user:
+        upsert_user(message.from_user)
+        if is_admin_user(message.from_user.id) or has_active_subscription(
+            message.from_user.id
+        ):
             await show_district_menu(message, state)
             return
-    await show_payment_screen(message, state)
+
+        if not has_used_demo(message.from_user.id):
+            await show_subscription_status(message, state)
+            return
+
+    await show_subscription_status(message, state)
+
+
+@public_router.message(F.text == SUBSCRIPTION_MENU_TEXT)
+async def handle_subscription_menu(message: types.Message, state: FSMContext):
+    if message.from_user:
+        upsert_user(message.from_user)
+    await show_subscription_status(message, state)
+
+
+@public_router.message(F.text == HELP_MENU_TEXT)
+async def handle_help_menu(message: types.Message, state: FSMContext):
+    await show_help(message, state)
+
+
+@public_router.message(F.text == ADMIN_MENU_BUTTON_TEXT)
+async def handle_admin_menu_button(message: types.Message):
+    from handlers.admin import format_admin_menu_text, get_admin_keyboard
+
+    if not message.from_user or not is_admin_user(message.from_user.id):
+        await message.answer("Эта команда доступна только администратору.")
+        return
+
+    await message.answer(format_admin_menu_text(), reply_markup=get_admin_keyboard())
 
 
 @public_router.message(Survey.welcome)
 async def handle_welcome(message: types.Message, state: FSMContext):
     if message.text == START_BUTTON_TEXT:
-        if message.from_user and (
-            is_admin_user(message.from_user.id)
-            or has_active_subscription(message.from_user.id)
-        ):
-            await show_district_menu(message, state)
-            return
-        await show_payment_screen(message, state)
+        await show_main_menu(message, state)
         return
 
     await message.answer(
-        "Нажмите кнопку ниже, чтобы начать.",
-        reply_markup=build_keyboard([START_BUTTON_TEXT], row_width=1),
+        "Выберите действие в главном меню.",
+        reply_markup=build_keyboard(MAIN_MENU_BUTTONS, row_width=1),
     )
 
 
@@ -161,7 +283,11 @@ async def handle_demo_start(callback: types.CallbackQuery, state: FSMContext):
         await show_district_menu(callback.message, state)
         return
 
-    if telegram_user_id and has_used_demo(telegram_user_id) and not is_admin_user(telegram_user_id):
+    if (
+        telegram_user_id
+        and has_used_demo(telegram_user_id)
+        and not is_admin_user(telegram_user_id)
+    ):
         await callback.message.answer(
             "Вы уже использовали демо-доступ.\n\nВыберите тариф для продолжения:",
             reply_markup=build_payment_keyboard(include_demo=False),
@@ -205,7 +331,9 @@ async def handle_metro(message: types.Message, state: FSMContext):
         data = await state.get_data()
         is_demo = data.get("is_demo", False)
         demo_routes_left = data.get("demo_routes_left", 0)
-        await show_district_menu(message, state, is_demo=is_demo, demo_routes_left=demo_routes_left)
+        await show_district_menu(
+            message, state, is_demo=is_demo, demo_routes_left=demo_routes_left
+        )
         return
 
     if metro not in DISTRICTS.get(district, []):
@@ -261,7 +389,10 @@ async def handle_theme(message: types.Message, state: FSMContext):
 
     route = format_route(selected, metro, theme)
     await message.answer(
-        route, reply_markup=types.ReplyKeyboardRemove(), parse_mode="HTML", disable_web_page_preview=True
+        route,
+        reply_markup=types.ReplyKeyboardRemove(),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
     )
     await asyncio.sleep(0.3)
 
@@ -278,7 +409,7 @@ async def handle_theme(message: types.Message, state: FSMContext):
                 "🎁 Демо-доступ исчерпан.\n\nЧтобы продолжить, выберите тариф:",
                 reply_markup=types.ReplyKeyboardRemove(),
             )
-            await show_payment_screen(message, state)
+            await show_subscription_status(message, state)
             return
 
     await message.answer(
@@ -330,8 +461,11 @@ async def handle_after_route(message: types.Message, state: FSMContext):
     if message.text == BACK_TO_START_TEXT:
         is_demo = data.get("is_demo", False)
         demo_routes_left = data.get("demo_routes_left", 0)
-        await show_district_menu(
-            message, state, is_demo=is_demo, demo_routes_left=demo_routes_left
+        await show_main_menu(
+            message,
+            state,
+            is_demo=is_demo,
+            demo_routes_left=demo_routes_left,
         )
         return
 
@@ -351,12 +485,12 @@ async def handle_unknown_callback(callback: types.CallbackQuery, state: FSMConte
         is_admin_user(callback.from_user.id)
         or has_active_subscription(callback.from_user.id)
     ):
-        await callback.message.answer("Кнопка устарела. Возвращаю к выбору района.")
-        await show_district_menu(callback.message, state)
+        await callback.message.answer("Кнопка устарела. Возвращаю в главное меню.")
+        await show_main_menu(callback.message, state)
         return
 
-    await callback.message.answer("Кнопка устарела. Откройте новый счет или выберите demo.")
-    await show_payment_screen(callback.message, state)
+    await callback.message.answer("Кнопка устарела. Возвращаю в главное меню.")
+    await show_main_menu(callback.message, state)
 
 
 @fallback_router.message()
@@ -364,22 +498,20 @@ async def handle_unknown_message(message: types.Message, state: FSMContext):
     if message.from_user:
         upsert_user(message.from_user)
         if is_admin_user(message.from_user.id):
-            await message.answer(
-                "Не понял действие. Для админки используйте /admin, для маршрутов нажмите «Начать».",
-                reply_markup=build_keyboard([START_BUTTON_TEXT], row_width=1),
-            )
+            await message.answer("Не понял действие, возвращаю в меню.")
+            await show_main_menu(message, state)
             return
 
         if has_active_subscription(message.from_user.id):
-            await message.answer("Не понял действие. Возвращаю к выбору района.")
-            await show_district_menu(message, state)
+            await message.answer("Не понял действие. Возвращаю в главное меню.")
+            await show_main_menu(message, state)
             return
 
     await message.answer(
-        "Не понял действие. Чтобы продолжить, выберите тариф или demo.",
+        "Не понял действие. Возвращаю в главное меню.",
         reply_markup=types.ReplyKeyboardRemove(),
     )
-    await show_payment_screen(message, state)
+    await show_main_menu(message, state)
 
 
 router.include_router(public_router)

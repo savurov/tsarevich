@@ -15,3 +15,4 @@ class AdminSubscriptions(StatesGroup):
     user_details = State()
     add_subscription = State()
     custom_days = State()
+    confirm_delete = State()

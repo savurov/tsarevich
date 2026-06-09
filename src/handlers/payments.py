@@ -128,7 +128,7 @@ async def handle_pre_checkout_query(pre_checkout_query: types.PreCheckoutQuery):
 
 @router.message(F.successful_payment)
 async def handle_successful_payment(message: types.Message, state: FSMContext):
-    from handlers.dialogs import show_district_menu
+    from handlers.dialogs import show_main_menu
 
     if not message.successful_payment or not message.from_user:
         return
@@ -191,13 +191,21 @@ async def handle_successful_payment(message: types.Message, state: FSMContext):
     log_event(logger, logging.INFO, "Payment saved", telegram_user_id=message.from_user.id, plan=plan_code, amount=payment.total_amount, tg_charge=payment.telegram_payment_charge_id)
 
     await message.answer("Оплата прошла успешно. Доступ открыт.")
-    await show_district_menu(message, state)
+    await show_main_menu(message, state)
 
 
 @router.message(Survey.payment)
 async def handle_payment_message(message: types.Message, state: FSMContext):
     from db import has_active_subscription, is_admin_user
-    from handlers.dialogs import START_BUTTON_TEXT, show_district_menu
+    from handlers.dialogs import (
+        BACK_TO_START_TEXT,
+        START_BUTTON_TEXT,
+        SUBSCRIPTION_MENU_TEXT,
+        build_keyboard,
+        show_main_menu,
+        show_district_menu,
+        show_subscription_status,
+    )
 
     if not message.from_user:
         await show_payment_screen(message, state)
@@ -206,6 +214,14 @@ async def handle_payment_message(message: types.Message, state: FSMContext):
     if is_admin_user(message.from_user.id) or has_active_subscription(message.from_user.id):
         await message.answer("Доступ уже открыт. Продолжаем.")
         await show_district_menu(message, state)
+        return
+
+    if message.text == BACK_TO_START_TEXT:
+        await show_main_menu(message, state)
+        return
+
+    if message.text == SUBSCRIPTION_MENU_TEXT:
+        await show_subscription_status(message, state)
         return
 
     if message.text == START_BUTTON_TEXT:
@@ -219,3 +235,7 @@ async def handle_payment_message(message: types.Message, state: FSMContext):
             "Выберите тариф еще раз, и я создам новый счет."
         )
     await show_payment_screen(message, state)
+    await message.answer(
+        "Можно также вернуться в меню.",
+        reply_markup=build_keyboard([SUBSCRIPTION_MENU_TEXT, BACK_TO_START_TEXT], row_width=1),
+    )

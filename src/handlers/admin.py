@@ -19,7 +19,19 @@ from db import (
     is_admin_user,
     reset_demo_usage,
 )
-from handlers.dialogs import build_keyboard, show_district_menu
+from handlers.dialogs import (
+    ADMIN_MENU_BUTTON_TEXT,
+    BACK_TO_START_TEXT,
+    HELP_MENU_TEXT,
+    ROUTE_MENU_TEXT,
+    START_BUTTON_TEXT,
+    SUBSCRIPTION_MENU_TEXT,
+    build_keyboard,
+    show_help,
+    show_district_menu,
+    show_main_menu,
+    show_subscription_status,
+)
 from handlers.middlewares import AdminOnlyMiddleware
 from handlers.states import AdminSubscriptions
 from google_sheets import (
@@ -43,6 +55,8 @@ SUBSCRIPTION_RESET_DEMO_TEXT = "Обнулить demo"
 SUBSCRIPTION_USERS_BACK_TEXT = "К списку пользователей"
 SUBSCRIPTION_CUSTOM_TEXT = "Custom"
 SUBSCRIPTION_BACK_TEXT = "Назад"
+SUBSCRIPTION_CONFIRM_DELETE_YES_TEXT = "Да, удалить"
+SUBSCRIPTION_CONFIRM_DELETE_NO_TEXT = "Нет"
 SUBSCRIPTION_DAY_OPTIONS = {
     "1 день": ("1day", 1),
     "3 дня": ("3days", 3),
@@ -61,6 +75,31 @@ def get_admin_keyboard():
 
 def format_admin_menu_text():
     return "🏳️‍🌈🦄✨  A D M I N K A  ✨🦄🏳️‍🌈"
+
+
+async def handle_admin_navigation(message: types.Message, state: FSMContext):
+    if message.text in {ADMIN_BACK_TEXT, BACK_TO_START_TEXT, START_BUTTON_TEXT}:
+        await show_main_menu(message, state)
+        return True
+
+    if message.text == ADMIN_MENU_BUTTON_TEXT:
+        await state.clear()
+        await message.answer(format_admin_menu_text(), reply_markup=get_admin_keyboard())
+        return True
+
+    if message.text == ROUTE_MENU_TEXT:
+        await show_district_menu(message, state)
+        return True
+
+    if message.text == SUBSCRIPTION_MENU_TEXT:
+        await show_subscription_status(message, state)
+        return True
+
+    if message.text == HELP_MENU_TEXT:
+        await show_help(message, state)
+        return True
+
+    return False
 
 
 def format_db_result(columns, rows):
@@ -297,6 +336,8 @@ async def handle_subscription_user_list(message: types.Message, state: FSMContex
     if not message.from_user or not is_admin_user(message.from_user.id):
         await message.answer(ADMIN_ACCESS_TEXT)
         return
+    if await handle_admin_navigation(message, state):
+        return
 
     if message.text == SUBSCRIPTION_BACK_TEXT:
         await state.clear()
@@ -318,6 +359,8 @@ async def handle_subscription_user_details(message: types.Message, state: FSMCon
     if not message.from_user or not is_admin_user(message.from_user.id):
         await message.answer(ADMIN_ACCESS_TEXT)
         return
+    if await handle_admin_navigation(message, state):
+        return
 
     data = await state.get_data()
     telegram_user_id = data.get("selected_subscription_user_id")
@@ -337,13 +380,20 @@ async def handle_subscription_user_details(message: types.Message, state: FSMCon
         return
 
     if message.text == SUBSCRIPTION_DELETE_TEXT:
-        deleted = delete_active_subscription(telegram_user_id)
         user_label = _get_user_admin_label(telegram_user_id)
-        if deleted:
-            await message.answer(f"Активная подписка пользователя {user_label} удалена.")
-        else:
+        if not get_active_payment(telegram_user_id):
             await message.answer(f"У пользователя {user_label} активной подписки нет.")
-        await show_subscription_user_details(message, state, telegram_user_id)
+            await show_subscription_user_details(message, state, telegram_user_id)
+            return
+
+        await state.set_state(AdminSubscriptions.confirm_delete)
+        await message.answer(
+            f"Вы уверены, что хотите безвозвратно удалить текущую подписку для {user_label}?",
+            reply_markup=build_keyboard(
+                [SUBSCRIPTION_CONFIRM_DELETE_YES_TEXT, SUBSCRIPTION_CONFIRM_DELETE_NO_TEXT],
+                row_width=1,
+            ),
+        )
         return
 
     if message.text == SUBSCRIPTION_RESET_DEMO_TEXT:
@@ -368,6 +418,8 @@ async def handle_subscription_user_details(message: types.Message, state: FSMCon
 async def handle_subscription_add(message: types.Message, state: FSMContext):
     if not message.from_user or not is_admin_user(message.from_user.id):
         await message.answer(ADMIN_ACCESS_TEXT)
+        return
+    if await handle_admin_navigation(message, state):
         return
 
     data = await state.get_data()
@@ -397,10 +449,50 @@ async def handle_subscription_add(message: types.Message, state: FSMContext):
     await add_admin_subscription_and_show(message, state, telegram_user_id, plan_code, days)
 
 
+@router.message(AdminSubscriptions.confirm_delete)
+async def handle_subscription_confirm_delete(message: types.Message, state: FSMContext):
+    if not message.from_user or not is_admin_user(message.from_user.id):
+        await message.answer(ADMIN_ACCESS_TEXT)
+        return
+    if await handle_admin_navigation(message, state):
+        return
+
+    data = await state.get_data()
+    telegram_user_id = data.get("selected_subscription_user_id")
+    if not telegram_user_id:
+        await show_subscription_users(message, state)
+        return
+
+    user_label = _get_user_admin_label(telegram_user_id)
+    if message.text == SUBSCRIPTION_CONFIRM_DELETE_NO_TEXT:
+        await message.answer("Удаление отменено.")
+        await show_subscription_user_details(message, state, telegram_user_id)
+        return
+
+    if message.text != SUBSCRIPTION_CONFIRM_DELETE_YES_TEXT:
+        await message.answer(
+            "Подтвердите удаление или отмените действие.",
+            reply_markup=build_keyboard(
+                [SUBSCRIPTION_CONFIRM_DELETE_YES_TEXT, SUBSCRIPTION_CONFIRM_DELETE_NO_TEXT],
+                row_width=1,
+            ),
+        )
+        return
+
+    deleted = delete_active_subscription(telegram_user_id)
+    if deleted:
+        await message.answer(f"Активная подписка пользователя {user_label} удалена.")
+    else:
+        await message.answer(f"У пользователя {user_label} активной подписки уже нет.")
+    await show_subscription_user_details(message, state, telegram_user_id)
+
+
 @router.message(AdminSubscriptions.custom_days)
 async def handle_subscription_custom_days(message: types.Message, state: FSMContext):
     if not message.from_user or not is_admin_user(message.from_user.id):
         await message.answer(ADMIN_ACCESS_TEXT)
+        return
+    if await handle_admin_navigation(message, state):
         return
 
     data = await state.get_data()
@@ -433,7 +525,7 @@ async def handle_admin_back(message: types.Message, state: FSMContext):
         await message.answer(ADMIN_ACCESS_TEXT)
         return
 
-    await show_district_menu(message, state)
+    await show_main_menu(message, state)
 
 
 @router.message(Command("db"))

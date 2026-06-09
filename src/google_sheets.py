@@ -262,6 +262,18 @@ async def get_places():
     return _places_cache
 
 
+async def ensure_places_loaded():
+    if _places_cache:
+        return _places_cache
+
+    try:
+        cached_places = load_places_from_disk_cache()
+    except PlacesLoadError:
+        return _places_cache
+
+    return _set_places_state(cached_places, "disk_cache")
+
+
 def get_places_count():
     return len(_places_cache)
 
