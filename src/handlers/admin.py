@@ -7,18 +7,26 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 
 from db import (
+    create_admin_subscription,
+    delete_active_subscription,
     execute_query,
+    get_active_payment,
     get_all_payments,
     get_all_users,
+    get_all_users_by_telegram_id,
     get_table_columns,
+    get_user_by_telegram_id,
     is_admin_user,
+    reset_demo_usage,
 )
 from handlers.dialogs import build_keyboard, show_district_menu
+from handlers.states import AdminSubscriptions
 from google_sheets import (
     get_places_count,
     reload_places,
     validate_places,
 )
+from time_utils import format_utc_timestamp_msk
 
 router = Router()
 
@@ -26,12 +34,24 @@ ADMIN_ACCESS_TEXT = "Эта команда доступна только адм�
 ADMIN_MENU_TEXT = "🏳️‍🌈🦄✨  A D M I N K A  ✨🦄🏳️‍🌈"
 ADMIN_RELOAD_TEXT = "Обновить данные"
 ADMIN_EXPORT_TEXT = "Выгрузить БД в CSV"
+ADMIN_SUBSCRIPTIONS_TEXT = "Управление подписками"
 ADMIN_BACK_TEXT = "Выйти из админки"
+SUBSCRIPTION_ADD_TEXT = "Добавить подписку"
+SUBSCRIPTION_DELETE_TEXT = "Удалить подписку"
+SUBSCRIPTION_RESET_DEMO_TEXT = "Обнулить demo"
+SUBSCRIPTION_USERS_BACK_TEXT = "К списку пользователей"
+SUBSCRIPTION_CUSTOM_TEXT = "Custom"
+SUBSCRIPTION_BACK_TEXT = "Назад"
+SUBSCRIPTION_DAY_OPTIONS = {
+    "1 день": ("1day", 1),
+    "3 дня": ("3days", 3),
+    "7 дней": ("7days", 7),
+}
 
 
 def get_admin_keyboard():
     return build_keyboard(
-        [ADMIN_RELOAD_TEXT, ADMIN_EXPORT_TEXT, ADMIN_BACK_TEXT],
+        [ADMIN_RELOAD_TEXT, ADMIN_EXPORT_TEXT, ADMIN_SUBSCRIPTIONS_TEXT, ADMIN_BACK_TEXT],
         row_width=1,
     )
 
@@ -66,6 +86,88 @@ def build_csv_file(table_name, columns, rows):
         buffer.getvalue().encode("utf-8"),
         filename=f"{table_name}.csv",
     )
+
+
+def format_user_label(user):
+    username = user["username"] or f"id{user['telegram_user_id']}"
+    full_name = " ".join(
+        part for part in (user["last_name"], user["first_name"]) if part
+    )
+    if full_name:
+        return f"{username} ({full_name}) · {user['telegram_user_id']}"
+    return f"{username} · {user['telegram_user_id']}"
+
+
+def _format_subscription_status(user, active_payment):
+    demo_text = "demo использовано 2/2" if user["demo_used"] else "demo не использовано"
+    if not active_payment:
+        return f"подписки нет, {demo_text}"
+
+    expires_at = format_utc_timestamp_msk(active_payment["expires_at"])
+    source = "админка" if active_payment["created_by_admin"] else "оплата"
+    return f"подписка до {expires_at} ({source}), {demo_text}"
+
+
+def _get_user_admin_label(telegram_user_id):
+    user = get_user_by_telegram_id(telegram_user_id)
+    if not user:
+        return f"id{telegram_user_id}"
+    return format_user_label(user)
+
+
+async def show_subscription_users(message: types.Message, state: FSMContext):
+    users = get_all_users_by_telegram_id()
+    if not users:
+        await message.answer("Пользователей пока нет.", reply_markup=get_admin_keyboard())
+        return
+
+    labels = {format_user_label(user): user["telegram_user_id"] for user in users}
+    await state.set_state(AdminSubscriptions.user_list)
+    await state.update_data(subscription_user_labels=labels)
+    await message.answer(
+        "Выберите пользователя:",
+        reply_markup=build_keyboard([*labels.keys(), SUBSCRIPTION_BACK_TEXT], row_width=1),
+    )
+
+
+async def show_subscription_user_details(message: types.Message, state: FSMContext, telegram_user_id):
+    user = get_user_by_telegram_id(telegram_user_id)
+    if not user:
+        await message.answer("Пользователь не найден.")
+        await show_subscription_users(message, state)
+        return
+
+    active_payment = get_active_payment(telegram_user_id)
+    await state.set_state(AdminSubscriptions.user_details)
+    await state.update_data(selected_subscription_user_id=telegram_user_id)
+    await message.answer(
+        f"Выбран: {format_user_label(user)}\n\n{_format_subscription_status(user, active_payment)}",
+        reply_markup=build_keyboard(
+            [
+                SUBSCRIPTION_ADD_TEXT,
+                SUBSCRIPTION_DELETE_TEXT,
+                SUBSCRIPTION_RESET_DEMO_TEXT,
+                SUBSCRIPTION_USERS_BACK_TEXT,
+                SUBSCRIPTION_BACK_TEXT,
+            ],
+            row_width=1,
+        ),
+    )
+
+
+async def add_admin_subscription_and_show(message, state, telegram_user_id, plan_code, days):
+    create_admin_subscription(
+        telegram_user_id=telegram_user_id,
+        plan_code=plan_code,
+        duration_days=days,
+    )
+    active_payment = get_active_payment(telegram_user_id)
+    expires_at = format_utc_timestamp_msk(active_payment["expires_at"])
+    await message.answer(
+        f"Пользователь {_get_user_admin_label(telegram_user_id)} подписан на {days} дн.\n"
+        f"Подписка до {expires_at}."
+    )
+    await show_subscription_user_details(message, state, telegram_user_id)
 
 
 def _format_status_source(source):
@@ -176,6 +278,150 @@ async def handle_admin_export(message: types.Message):
         build_csv_file("payments", payments_columns, payments)
     )
     await message.answer("CSV выгружены.", reply_markup=get_admin_keyboard())
+
+
+@router.message(lambda message: message.text == ADMIN_SUBSCRIPTIONS_TEXT)
+async def handle_admin_subscriptions(message: types.Message, state: FSMContext):
+    if not message.from_user or not is_admin_user(message.from_user.id):
+        await message.answer(ADMIN_ACCESS_TEXT)
+        return
+
+    await show_subscription_users(message, state)
+
+
+@router.message(AdminSubscriptions.user_list)
+async def handle_subscription_user_list(message: types.Message, state: FSMContext):
+    if not message.from_user or not is_admin_user(message.from_user.id):
+        await message.answer(ADMIN_ACCESS_TEXT)
+        return
+
+    if message.text == SUBSCRIPTION_BACK_TEXT:
+        await state.clear()
+        await message.answer(format_admin_menu_text(), reply_markup=get_admin_keyboard())
+        return
+
+    data = await state.get_data()
+    labels = data.get("subscription_user_labels", {})
+    telegram_user_id = labels.get(message.text)
+    if not telegram_user_id:
+        await message.answer("Выберите пользователя из списка.")
+        return
+
+    await show_subscription_user_details(message, state, telegram_user_id)
+
+
+@router.message(AdminSubscriptions.user_details)
+async def handle_subscription_user_details(message: types.Message, state: FSMContext):
+    if not message.from_user or not is_admin_user(message.from_user.id):
+        await message.answer(ADMIN_ACCESS_TEXT)
+        return
+
+    data = await state.get_data()
+    telegram_user_id = data.get("selected_subscription_user_id")
+    if not telegram_user_id:
+        await show_subscription_users(message, state)
+        return
+
+    if message.text == SUBSCRIPTION_ADD_TEXT:
+        await state.set_state(AdminSubscriptions.add_subscription)
+        await message.answer(
+            "На сколько дней добавить подписку?",
+            reply_markup=build_keyboard(
+                [*SUBSCRIPTION_DAY_OPTIONS.keys(), SUBSCRIPTION_CUSTOM_TEXT, SUBSCRIPTION_BACK_TEXT],
+                row_width=1,
+            ),
+        )
+        return
+
+    if message.text == SUBSCRIPTION_DELETE_TEXT:
+        deleted = delete_active_subscription(telegram_user_id)
+        user_label = _get_user_admin_label(telegram_user_id)
+        if deleted:
+            await message.answer(f"Активная подписка пользователя {user_label} удалена.")
+        else:
+            await message.answer(f"У пользователя {user_label} активной подписки нет.")
+        await show_subscription_user_details(message, state, telegram_user_id)
+        return
+
+    if message.text == SUBSCRIPTION_RESET_DEMO_TEXT:
+        reset_demo_usage(telegram_user_id)
+        await message.answer(f"Demo пользователя {_get_user_admin_label(telegram_user_id)} обнулено.")
+        await show_subscription_user_details(message, state, telegram_user_id)
+        return
+
+    if message.text == SUBSCRIPTION_USERS_BACK_TEXT:
+        await show_subscription_users(message, state)
+        return
+
+    if message.text == SUBSCRIPTION_BACK_TEXT:
+        await state.clear()
+        await message.answer(format_admin_menu_text(), reply_markup=get_admin_keyboard())
+        return
+
+    await message.answer("Выберите действие из списка.")
+
+
+@router.message(AdminSubscriptions.add_subscription)
+async def handle_subscription_add(message: types.Message, state: FSMContext):
+    if not message.from_user or not is_admin_user(message.from_user.id):
+        await message.answer(ADMIN_ACCESS_TEXT)
+        return
+
+    data = await state.get_data()
+    telegram_user_id = data.get("selected_subscription_user_id")
+    if not telegram_user_id:
+        await show_subscription_users(message, state)
+        return
+
+    if message.text == SUBSCRIPTION_BACK_TEXT:
+        await show_subscription_user_details(message, state, telegram_user_id)
+        return
+
+    if message.text == SUBSCRIPTION_CUSTOM_TEXT:
+        await state.set_state(AdminSubscriptions.custom_days)
+        await message.answer(
+            "На сколько дней? (введите только число)",
+            reply_markup=build_keyboard([SUBSCRIPTION_BACK_TEXT], row_width=1),
+        )
+        return
+
+    option = SUBSCRIPTION_DAY_OPTIONS.get(message.text)
+    if not option:
+        await message.answer("Выберите срок из списка.")
+        return
+
+    plan_code, days = option
+    await add_admin_subscription_and_show(message, state, telegram_user_id, plan_code, days)
+
+
+@router.message(AdminSubscriptions.custom_days)
+async def handle_subscription_custom_days(message: types.Message, state: FSMContext):
+    if not message.from_user or not is_admin_user(message.from_user.id):
+        await message.answer(ADMIN_ACCESS_TEXT)
+        return
+
+    data = await state.get_data()
+    telegram_user_id = data.get("selected_subscription_user_id")
+    if not telegram_user_id:
+        await show_subscription_users(message, state)
+        return
+
+    if message.text == SUBSCRIPTION_BACK_TEXT:
+        await show_subscription_user_details(message, state, telegram_user_id)
+        return
+
+    text = (message.text or "").strip()
+    if not text.isdigit() or int(text) <= 0:
+        await message.answer("Введите положительное число дней.")
+        return
+
+    await add_admin_subscription_and_show(
+        message,
+        state,
+        telegram_user_id,
+        "custom",
+        int(text),
+    )
 
 
 @router.message(lambda message: message.text == ADMIN_BACK_TEXT)

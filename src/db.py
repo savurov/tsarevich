@@ -2,6 +2,7 @@ import sqlite3
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import uuid4
 
 from config import DATABASE_PATH
 
@@ -159,6 +160,16 @@ def get_all_users():
     )
 
 
+def get_all_users_by_telegram_id():
+    return fetch_all(
+        """
+        SELECT *
+        FROM users
+        ORDER BY telegram_user_id ASC
+        """
+    )
+
+
 def get_all_payments():
     return fetch_all(
         """
@@ -255,6 +266,41 @@ def has_active_subscription(telegram_user_id):
     return get_active_payment(telegram_user_id) is not None
 
 
+def create_admin_subscription(telegram_user_id, plan_code, duration_days):
+    if not get_user_by_telegram_id(telegram_user_id):
+        raise ValueError(f"User {telegram_user_id} not found")
+
+    now = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
+    started_at = now.strftime("%Y-%m-%d %H:%M:%S")
+    expires_at = (now + timedelta(days=duration_days)).strftime("%Y-%m-%d %H:%M:%S")
+    fake_charge_id = f"ADMIN_FAKED_{uuid4()}"
+
+    return create_payment(
+        telegram_user_id=telegram_user_id,
+        plan_code=plan_code,
+        currency="RUB",
+        total_amount=0,
+        telegram_payment_charge_id=fake_charge_id,
+        provider_payment_charge_id=fake_charge_id,
+        started_at=started_at,
+        expires_at=expires_at,
+        created_by_admin=1,
+        raw_payload_json="",
+    )
+
+
+def delete_active_subscription(telegram_user_id):
+    cursor = execute_write(
+        """
+        DELETE FROM payments
+        WHERE telegram_user_id = ?
+          AND expires_at > CURRENT_TIMESTAMP
+        """,
+        (telegram_user_id,),
+    )
+    return cursor.rowcount > 0
+
+
 def record_successful_payment(
     telegram_user_id,
     plan_code,
@@ -307,5 +353,17 @@ def has_used_demo(telegram_user_id):
 def mark_demo_used(telegram_user_id):
     execute_write(
         "UPDATE users SET demo_used = 1 WHERE telegram_user_id = ?",
+        (telegram_user_id,),
+    )
+
+
+def reset_demo_usage(telegram_user_id):
+    execute_write(
+        """
+        UPDATE users
+        SET demo_used = 0,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE telegram_user_id = ?
+        """,
         (telegram_user_id,),
     )
