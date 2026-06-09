@@ -8,12 +8,12 @@ from config import PAYMENT_CURRENCY, PAYMENT_PLANS, PAYMENT_PROVIDER_TOKEN
 from db import has_used_demo, record_successful_payment, upsert_user
 from handlers.states import Survey
 from logging_utils import log_event, log_exception
+from payment_messages import format_invoice_send_error
 
 router = Router()
 logger = logging.getLogger("teleg.payments")
 
 PAYLOAD_PREFIX = "plan"
-PAYMENT_ERROR_TEXT = "Не удалось создать счёт. Попробуйте ещё раз чуть позже."
 
 
 def build_payment_keyboard(include_demo=True):
@@ -32,6 +32,7 @@ def build_payment_keyboard(include_demo=True):
 async def show_payment_screen(message: types.Message, state: FSMContext):
     await state.set_state(Survey.payment)
     include_demo = bool(message.from_user and not has_used_demo(message.from_user.id))
+    await message.answer("Открываю варианты доступа.", reply_markup=types.ReplyKeyboardRemove())
     await message.answer(
         "Выберите тариф для доступа:\n\n"
         "После выбора тарифа Telegram откроет встроенную форму оплаты.",
@@ -51,16 +52,26 @@ def parse_invoice_payload(payload):
     return plan_code, int(telegram_user_id)
 
 
-@router.callback_query(F.data.startswith("buy_plan:"), Survey.payment)
-async def handle_buy_plan(callback: types.CallbackQuery):
+@router.callback_query(F.data.startswith("buy_plan:"))
+async def handle_buy_plan(callback: types.CallbackQuery, state: FSMContext):
+    from db import has_active_subscription, is_admin_user
+    from handlers.dialogs import show_district_menu
+
     await callback.answer()
     if not callback.message or not callback.from_user or not callback.data:
         return
 
+    if is_admin_user(callback.from_user.id) or has_active_subscription(callback.from_user.id):
+        await callback.message.answer("Доступ уже открыт. Продолжаем.")
+        await show_district_menu(callback.message, state)
+        return
+
+    await state.set_state(Survey.payment)
     plan_code = callback.data.split(":", 1)[1]
     plan = PAYMENT_PLANS.get(plan_code)
     if not plan:
-        await callback.message.answer("Неизвестный тариф. Попробуйте выбрать его ещё раз.")
+        await callback.message.answer("Этот тариф больше неактуален. Выберите тариф заново.")
+        await show_payment_screen(callback.message, state)
         return
 
     upsert_user(callback.from_user)
@@ -80,7 +91,8 @@ async def handle_buy_plan(callback: types.CallbackQuery):
         log_event(logger, logging.INFO, "Invoice sent", telegram_user_id=callback.from_user.id, plan=plan_code, amount=plan["price_minor_units"])
     except Exception as exc:
         log_exception(logger, "Invoice send failed", exc, telegram_user_id=callback.from_user.id, plan=plan_code, amount=plan["price_minor_units"])
-        await callback.message.answer(PAYMENT_ERROR_TEXT)
+        await callback.message.answer(format_invoice_send_error(exc))
+        await show_payment_screen(callback.message, state)
 
 
 @router.pre_checkout_query()
@@ -92,7 +104,10 @@ async def handle_pre_checkout_query(pre_checkout_query: types.PreCheckoutQuery):
         log_event(logger, logging.WARNING, "Pre-checkout rejected", telegram_user_id=pre_checkout_query.from_user.id, reason="invalid_payload", amount=pre_checkout_query.total_amount)
         await pre_checkout_query.answer(
             ok=False,
-            error_message="Не удалось проверить состав заказа. Попробуйте снова.",
+            error_message=(
+                "Не удалось проверить состав заказа. "
+                "Закройте оплату, вернитесь к выбору тарифа и откройте новый счет."
+            ),
         )
         return
 
@@ -100,7 +115,10 @@ async def handle_pre_checkout_query(pre_checkout_query: types.PreCheckoutQuery):
         log_event(logger, logging.WARNING, "Pre-checkout rejected", telegram_user_id=pre_checkout_query.from_user.id, plan=plan_code, reason="stale_or_mismatched_invoice", amount=pre_checkout_query.total_amount)
         await pre_checkout_query.answer(
             ok=False,
-            error_message="Этот счёт больше неактуален. Откройте новый тариф в чате с ботом.",
+            error_message=(
+                "Этот счет больше неактуален. "
+                "Закройте оплату и выберите тариф заново в чате с ботом."
+            ),
         )
         return
 
@@ -121,18 +139,27 @@ async def handle_successful_payment(message: types.Message, state: FSMContext):
         plan_code, telegram_user_id = parse_invoice_payload(payment.invoice_payload)
     except (TypeError, ValueError):
         log_event(logger, logging.WARNING, "Payment received with invalid payload", telegram_user_id=message.from_user.id, amount=payment.total_amount, tg_charge=payment.telegram_payment_charge_id)
-        await message.answer("Платёж получен, но не удалось распознать тариф. Напишите в поддержку.")
+        await message.answer(
+            "Оплата прошла, но не удалось распознать тариф. "
+            "Повторно платить не нужно. Напишите в поддержку, мы откроем доступ вручную."
+        )
         return
 
     if telegram_user_id != message.from_user.id:
         log_event(logger, logging.WARNING, "Payment received for mismatched user", telegram_user_id=message.from_user.id, plan=plan_code, amount=payment.total_amount, tg_charge=payment.telegram_payment_charge_id)
-        await message.answer("Платёж получен, но принадлежит другому пользователю.")
+        await message.answer(
+            "Оплата прошла, но счет был создан для другого пользователя. "
+            "Повторно платить не нужно. Напишите в поддержку, мы проверим платеж."
+        )
         return
 
     plan = PAYMENT_PLANS.get(plan_code)
     if not plan:
         log_event(logger, logging.WARNING, "Payment received for unknown plan", telegram_user_id=message.from_user.id, plan=plan_code, amount=payment.total_amount, tg_charge=payment.telegram_payment_charge_id)
-        await message.answer("Платёж получен, но тариф не найден. Напишите в поддержку.")
+        await message.answer(
+            "Оплата прошла, но тариф не найден. "
+            "Повторно платить не нужно. Напишите в поддержку, мы откроем доступ вручную."
+        )
         return
 
     log_event(logger, logging.INFO, "Payment received", telegram_user_id=message.from_user.id, plan=plan_code, amount=payment.total_amount, tg_charge=payment.telegram_payment_charge_id)
@@ -155,10 +182,40 @@ async def handle_successful_payment(message: types.Message, state: FSMContext):
         )
     except Exception as exc:
         log_exception(logger, "Payment save failed", exc, telegram_user_id=message.from_user.id, plan=plan_code, amount=payment.total_amount, tg_charge=payment.telegram_payment_charge_id)
-        await message.answer("Оплата получена, но доступ пока не открылся автоматически. Напишите в поддержку.")
+        await message.answer(
+            "Оплата прошла, но доступ пока не открылся автоматически. "
+            "Повторно платить не нужно. Напишите в поддержку, мы проверим платеж и откроем доступ вручную."
+        )
         return
 
     log_event(logger, logging.INFO, "Payment saved", telegram_user_id=message.from_user.id, plan=plan_code, amount=payment.total_amount, tg_charge=payment.telegram_payment_charge_id)
 
     await message.answer("Оплата прошла успешно. Доступ открыт.")
     await show_district_menu(message, state)
+
+
+@router.message(Survey.payment)
+async def handle_payment_message(message: types.Message, state: FSMContext):
+    from db import has_active_subscription, is_admin_user
+    from handlers.dialogs import START_BUTTON_TEXT, show_district_menu
+
+    if not message.from_user:
+        await show_payment_screen(message, state)
+        return
+
+    if is_admin_user(message.from_user.id) or has_active_subscription(message.from_user.id):
+        await message.answer("Доступ уже открыт. Продолжаем.")
+        await show_district_menu(message, state)
+        return
+
+    if message.text == START_BUTTON_TEXT:
+        await message.answer(
+            "Чтобы продолжить, выберите тариф кнопкой в сообщении ниже. "
+            "Если Telegram показал ошибку оплаты, просто откройте новый счет."
+        )
+    else:
+        await message.answer(
+            "Оплата пока не прошла. Если Telegram показал ошибку, деньги не списались. "
+            "Выберите тариф еще раз, и я создам новый счет."
+        )
+    await show_payment_screen(message, state)

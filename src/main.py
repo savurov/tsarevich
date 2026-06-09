@@ -19,6 +19,29 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 
+@dp.errors()
+async def handle_error(event):
+    log_exception(logger, "Update handling failed", event.exception)
+
+    update = event.update
+    message = getattr(update, "message", None)
+    callback_query = getattr(update, "callback_query", None)
+    if callback_query:
+        try:
+            await callback_query.answer("Что-то пошло не так.")
+        except Exception:
+            pass
+        message = callback_query.message
+
+    if message:
+        try:
+            await message.answer(
+                "Что-то пошло не так. Я сбросил текущий шаг, нажмите /start и попробуйте заново."
+            )
+        except Exception:
+            pass
+
+
 async def main():
     log_event(logger, logging.INFO, "Starting bot")
     try:

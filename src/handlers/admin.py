@@ -20,6 +20,7 @@ from db import (
     reset_demo_usage,
 )
 from handlers.dialogs import build_keyboard, show_district_menu
+from handlers.middlewares import AdminOnlyMiddleware
 from handlers.states import AdminSubscriptions
 from google_sheets import (
     get_places_count,
@@ -47,6 +48,8 @@ SUBSCRIPTION_DAY_OPTIONS = {
     "3 дня": ("3days", 3),
     "7 дней": ("7days", 7),
 }
+
+router.message.middleware(AdminOnlyMiddleware(ADMIN_ACCESS_TEXT))
 
 
 def get_admin_keyboard():

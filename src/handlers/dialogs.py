@@ -18,10 +18,15 @@ from google_sheets import (
     get_available_themes,
     get_places,
 )
+from handlers.middlewares import SubscriptionRequiredMiddleware
 from handlers.payments import build_payment_keyboard, show_payment_screen
 from handlers.states import Survey
 
 router = Router()
+public_router = Router()
+protected_router = Router()
+fallback_router = Router()
+protected_router.message.middleware(SubscriptionRequiredMiddleware())
 SAME_STATION_TEXT = "📍 Та же станция"
 CHANGE_STATION_TEXT = "🔀 Сменить станцию"
 BACK_TO_START_TEXT = "🏠 В начало"
@@ -75,23 +80,6 @@ async def load_places_or_notify(message: types.Message):
     return await get_places()
 
 
-async def ensure_access(message: types.Message, state: FSMContext):
-    if not message.from_user:
-        await show_payment_screen(message, state)
-        return False
-
-    data = await state.get_data()
-    if data.get("is_demo"):
-        return True
-
-    telegram_user_id = message.from_user.id
-    if is_admin_user(telegram_user_id) or has_active_subscription(telegram_user_id):
-        return True
-
-    await show_payment_screen(message, state)
-    return False
-
-
 async def show_district_menu(
     message: types.Message,
     state: FSMContext,
@@ -108,10 +96,11 @@ async def show_district_menu(
     )
 
 
-@router.message(Command("start"))
+@public_router.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     if message.from_user:
         upsert_user(message.from_user)
+    await state.clear()
     await state.set_state(Survey.welcome)
     await message.answer(
         "Привет! 👋\n\nЯ помогу найти интересные места в Петербурге рядом с тобой.",
@@ -119,22 +108,59 @@ async def cmd_start(message: types.Message, state: FSMContext):
     )
 
 
-@router.message(Survey.welcome)
+@public_router.message(Command("cancel", "restart"))
+async def cmd_cancel(message: types.Message, state: FSMContext):
+    if message.from_user:
+        upsert_user(message.from_user)
+    await state.clear()
+    await message.answer("Ок, начнем заново.")
+    await cmd_start(message, state)
+
+
+@public_router.message(F.text == START_BUTTON_TEXT)
+async def handle_start_button(message: types.Message, state: FSMContext):
+    if message.from_user:
+        upsert_user(message.from_user)
+        if is_admin_user(message.from_user.id) or has_active_subscription(message.from_user.id):
+            await show_district_menu(message, state)
+            return
+    await show_payment_screen(message, state)
+
+
+@public_router.message(Survey.welcome)
 async def handle_welcome(message: types.Message, state: FSMContext):
     if message.text == START_BUTTON_TEXT:
-        if message.from_user and has_active_subscription(message.from_user.id):
+        if message.from_user and (
+            is_admin_user(message.from_user.id)
+            or has_active_subscription(message.from_user.id)
+        ):
             await show_district_menu(message, state)
             return
         await show_payment_screen(message, state)
+        return
+
+    await message.answer(
+        "Нажмите кнопку ниже, чтобы начать.",
+        reply_markup=build_keyboard([START_BUTTON_TEXT], row_width=1),
+    )
 
 
-@router.callback_query(F.data == "demo_start", Survey.payment)
+@public_router.callback_query(F.data == "demo_start")
 async def handle_demo_start(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     if not isinstance(callback.message, types.Message):
         return
 
     telegram_user_id = callback.from_user.id if callback.from_user else None
+    if callback.from_user:
+        upsert_user(callback.from_user)
+    if telegram_user_id and (
+        is_admin_user(telegram_user_id) or has_active_subscription(telegram_user_id)
+    ):
+        await callback.message.answer("Доступ уже открыт. Продолжаем.")
+        await show_district_menu(callback.message, state)
+        return
+
     if telegram_user_id and has_used_demo(telegram_user_id) and not is_admin_user(telegram_user_id):
         await callback.message.answer(
             "Вы уже использовали демо-доступ.\n\nВыберите тариф для продолжения:",
@@ -149,11 +175,8 @@ async def handle_demo_start(callback: types.CallbackQuery, state: FSMContext):
     )
 
 
-@router.message(Survey.district)
+@protected_router.message(Survey.district)
 async def handle_district(message: types.Message, state: FSMContext):
-    if not await ensure_access(message, state):
-        return
-
     district = message.text
     if district not in DISTRICTS:
         await message.answer("Пожалуйста выберите район из списка 👇")
@@ -169,11 +192,8 @@ async def handle_district(message: types.Message, state: FSMContext):
     await state.set_state(Survey.metro)
 
 
-@router.message(Survey.metro)
+@protected_router.message(Survey.metro)
 async def handle_metro(message: types.Message, state: FSMContext):
-    if not await ensure_access(message, state):
-        return
-
     data = await state.get_data()
     district = data.get("district")
     metro = normalize_metro_input(message.text)
@@ -213,11 +233,8 @@ async def handle_metro(message: types.Message, state: FSMContext):
     await state.set_state(Survey.theme)
 
 
-@router.message(Survey.theme)
+@protected_router.message(Survey.theme)
 async def handle_theme(message: types.Message, state: FSMContext):
-    if not await ensure_access(message, state):
-        return
-
     theme = message.text
     if theme not in THEMES:
         await message.answer("Пожалуйста выберите тему из списка 👇")
@@ -271,11 +288,8 @@ async def handle_theme(message: types.Message, state: FSMContext):
     await state.set_state(Survey.after_route)
 
 
-@router.message(Survey.after_route)
+@protected_router.message(Survey.after_route)
 async def handle_after_route(message: types.Message, state: FSMContext):
-    if not await ensure_access(message, state):
-        return
-
     data = await state.get_data()
     metro = data.get("metro")
     district = data.get("district")
@@ -325,3 +339,49 @@ async def handle_after_route(message: types.Message, state: FSMContext):
         "Выберите один из вариантов 👇",
         reply_markup=build_keyboard(AFTER_ROUTE_OPTIONS, row_width=2),
     )
+
+
+@fallback_router.callback_query()
+async def handle_unknown_callback(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer("Эта кнопка уже неактуальна.")
+    if not isinstance(callback.message, types.Message):
+        return
+
+    if callback.from_user and (
+        is_admin_user(callback.from_user.id)
+        or has_active_subscription(callback.from_user.id)
+    ):
+        await callback.message.answer("Кнопка устарела. Возвращаю к выбору района.")
+        await show_district_menu(callback.message, state)
+        return
+
+    await callback.message.answer("Кнопка устарела. Откройте новый счет или выберите demo.")
+    await show_payment_screen(callback.message, state)
+
+
+@fallback_router.message()
+async def handle_unknown_message(message: types.Message, state: FSMContext):
+    if message.from_user:
+        upsert_user(message.from_user)
+        if is_admin_user(message.from_user.id):
+            await message.answer(
+                "Не понял действие. Для админки используйте /admin, для маршрутов нажмите «Начать».",
+                reply_markup=build_keyboard([START_BUTTON_TEXT], row_width=1),
+            )
+            return
+
+        if has_active_subscription(message.from_user.id):
+            await message.answer("Не понял действие. Возвращаю к выбору района.")
+            await show_district_menu(message, state)
+            return
+
+    await message.answer(
+        "Не понял действие. Чтобы продолжить, выберите тариф или demo.",
+        reply_markup=types.ReplyKeyboardRemove(),
+    )
+    await show_payment_screen(message, state)
+
+
+router.include_router(public_router)
+router.include_router(protected_router)
+router.include_router(fallback_router)
