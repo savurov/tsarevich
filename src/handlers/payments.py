@@ -151,9 +151,6 @@ async def handle_successful_payment(message: types.Message, state: FSMContext):
             telegram_payment_charge_id=payment.telegram_payment_charge_id,
             provider_payment_charge_id=payment.provider_payment_charge_id,
             duration_days=plan["duration_days"],
-            subscription_expiration_date=payment.subscription_expiration_date,
-            is_recurring=payment.is_recurring,
-            is_first_recurring=payment.is_first_recurring,
             raw_payload_json=raw_payload_json,
         )
     except Exception as exc:

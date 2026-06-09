@@ -191,9 +191,7 @@ def create_payment(
     provider_payment_charge_id,
     started_at,
     expires_at,
-    subscription_expiration_date=None,
-    is_recurring=None,
-    is_first_recurring=None,
+    created_by_admin=0,
     raw_payload_json=None,
 ):
     cursor = execute_write(
@@ -207,12 +205,10 @@ def create_payment(
             provider_payment_charge_id,
             started_at,
             expires_at,
-            subscription_expiration_date,
-            is_recurring,
-            is_first_recurring,
+            created_by_admin,
             raw_payload_json
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             telegram_user_id,
@@ -223,9 +219,7 @@ def create_payment(
             provider_payment_charge_id,
             started_at,
             expires_at,
-            subscription_expiration_date,
-            is_recurring,
-            is_first_recurring,
+            int(created_by_admin),
             raw_payload_json,
         ),
     )
@@ -269,9 +263,6 @@ def record_successful_payment(
     telegram_payment_charge_id,
     provider_payment_charge_id,
     duration_days,
-    subscription_expiration_date=None,
-    is_recurring=None,
-    is_first_recurring=None,
     raw_payload_json=None,
 ):
     existing = get_payment_by_telegram_charge_id(telegram_payment_charge_id)
@@ -301,9 +292,6 @@ def record_successful_payment(
         provider_payment_charge_id=provider_payment_charge_id,
         started_at=started_at,
         expires_at=expires_at,
-        subscription_expiration_date=subscription_expiration_date,
-        is_recurring=int(is_recurring) if is_recurring is not None else None,
-        is_first_recurring=int(is_first_recurring) if is_first_recurring is not None else None,
         raw_payload_json=raw_payload_json,
     )
 
