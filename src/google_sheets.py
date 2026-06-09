@@ -268,10 +268,12 @@ async def ensure_places_loaded():
 
     try:
         cached_places = load_places_from_disk_cache()
+        return _set_places_state(cached_places, "disk_cache")
     except PlacesLoadError:
-        return _places_cache
+        pass
 
-    return _set_places_state(cached_places, "disk_cache")
+    places, _ = await reload_places()
+    return places
 
 
 def get_places_count():
@@ -343,7 +345,12 @@ async def reload_places():
 
 
 async def initialize_places():
-    return await reload_places()
+    try:
+        cached_places = load_places_from_disk_cache()
+        places = _set_places_state(cached_places, "disk_cache")
+        return places, get_places_load_status()
+    except PlacesLoadError:
+        return await reload_places()
 
 
 def _sort_walking_route(places, metro):
