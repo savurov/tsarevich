@@ -4,8 +4,8 @@ import logging
 from aiogram import F, Router, types
 from aiogram.fsm.context import FSMContext
 
-from config import PAYMENT_CURRENCY, PAYMENT_PLANS, PAYMENT_PROVIDER_TOKEN, PAYMENT_VAT_CODE
-from db import record_successful_payment
+from config import PAYMENT_CURRENCY, PAYMENT_PLANS, PAYMENT_PROVIDER_TOKEN
+from db import has_used_demo, record_successful_payment, upsert_user
 from handlers.states import Survey
 from logging_utils import log_event, log_exception
 
@@ -16,10 +16,13 @@ PAYLOAD_PREFIX = "plan"
 PAYMENT_ERROR_TEXT = "Не удалось создать счёт. Попробуйте ещё раз чуть позже."
 
 
-def build_payment_keyboard():
-    buttons = [
-        [types.InlineKeyboardButton(text="🎁 Демо — бесплатно", callback_data="demo_start")],
-    ] + [
+def build_payment_keyboard(include_demo=True):
+    buttons = []
+    if include_demo:
+        buttons.append(
+            [types.InlineKeyboardButton(text="🎁 Демо — бесплатно", callback_data="demo_start")]
+        )
+    buttons += [
         [types.InlineKeyboardButton(text=plan["label"], callback_data=f"buy_plan:{plan_code}")]
         for plan_code, plan in PAYMENT_PLANS.items()
     ]
@@ -28,10 +31,11 @@ def build_payment_keyboard():
 
 async def show_payment_screen(message: types.Message, state: FSMContext):
     await state.set_state(Survey.payment)
+    include_demo = bool(message.from_user and not has_used_demo(message.from_user.id))
     await message.answer(
         "Выберите тариф для доступа:\n\n"
         "После выбора тарифа Telegram откроет встроенную форму оплаты.",
-        reply_markup=build_payment_keyboard(),
+        reply_markup=build_payment_keyboard(include_demo=include_demo),
         parse_mode="Markdown",
     )
 
@@ -47,29 +51,6 @@ def parse_invoice_payload(payload):
     return plan_code, int(telegram_user_id)
 
 
-def build_provider_data(plan):
-    return json.dumps(
-        {
-            "receipt": {
-                "items": [
-                    {
-                        "description": plan["title"],
-                        "quantity": "1.00",
-                        "amount": {
-                            "value": f"{plan['price_minor_units'] / 100:.2f}",
-                            "currency": PAYMENT_CURRENCY,
-                        },
-                        "vat_code": PAYMENT_VAT_CODE,
-                        "payment_mode": "full_prepayment",
-                        "payment_subject": "service",
-                    }
-                ]
-            }
-        },
-        ensure_ascii=False,
-    )
-
-
 @router.callback_query(F.data.startswith("buy_plan:"), Survey.payment)
 async def handle_buy_plan(callback: types.CallbackQuery):
     await callback.answer()
@@ -82,8 +63,8 @@ async def handle_buy_plan(callback: types.CallbackQuery):
         await callback.message.answer("Неизвестный тариф. Попробуйте выбрать его ещё раз.")
         return
 
+    upsert_user(callback.from_user)
     payload = build_invoice_payload(plan_code, callback.from_user.id)
-    provider_data = build_provider_data(plan)
     log_event(logger, logging.INFO, "Invoice requested", telegram_user_id=callback.from_user.id, plan=plan_code, amount=plan["price_minor_units"])
 
     try:
@@ -95,9 +76,6 @@ async def handle_buy_plan(callback: types.CallbackQuery):
             currency=PAYMENT_CURRENCY,
             prices=[types.LabeledPrice(label=plan["label"], amount=plan["price_minor_units"])],
             start_parameter=f"plan-{plan_code}",
-            need_email=True,
-            send_email_to_provider=True,
-            provider_data=provider_data,
         )
         log_event(logger, logging.INFO, "Invoice sent", telegram_user_id=callback.from_user.id, plan=plan_code, amount=plan["price_minor_units"])
     except Exception as exc:

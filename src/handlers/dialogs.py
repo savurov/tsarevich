@@ -75,6 +75,23 @@ async def load_places_or_notify(message: types.Message):
     return await get_places()
 
 
+async def ensure_access(message: types.Message, state: FSMContext):
+    if not message.from_user:
+        await show_payment_screen(message, state)
+        return False
+
+    data = await state.get_data()
+    if data.get("is_demo"):
+        return True
+
+    telegram_user_id = message.from_user.id
+    if is_admin_user(telegram_user_id) or has_active_subscription(telegram_user_id):
+        return True
+
+    await show_payment_screen(message, state)
+    return False
+
+
 async def show_district_menu(
     message: types.Message,
     state: FSMContext,
@@ -121,7 +138,7 @@ async def handle_demo_start(callback: types.CallbackQuery, state: FSMContext):
     if telegram_user_id and has_used_demo(telegram_user_id) and not is_admin_user(telegram_user_id):
         await callback.message.answer(
             "Вы уже использовали демо-доступ.\n\nВыберите тариф для продолжения:",
-            reply_markup=build_payment_keyboard(),
+            reply_markup=build_payment_keyboard(include_demo=False),
         )
         return
     await show_district_menu(
@@ -134,6 +151,9 @@ async def handle_demo_start(callback: types.CallbackQuery, state: FSMContext):
 
 @router.message(Survey.district)
 async def handle_district(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state):
+        return
+
     district = message.text
     if district not in DISTRICTS:
         await message.answer("Пожалуйста выберите район из списка 👇")
@@ -151,6 +171,9 @@ async def handle_district(message: types.Message, state: FSMContext):
 
 @router.message(Survey.metro)
 async def handle_metro(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state):
+        return
+
     data = await state.get_data()
     district = data.get("district")
     metro = normalize_metro_input(message.text)
@@ -192,6 +215,9 @@ async def handle_metro(message: types.Message, state: FSMContext):
 
 @router.message(Survey.theme)
 async def handle_theme(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state):
+        return
+
     theme = message.text
     if theme not in THEMES:
         await message.answer("Пожалуйста выберите тему из списка 👇")
@@ -247,6 +273,9 @@ async def handle_theme(message: types.Message, state: FSMContext):
 
 @router.message(Survey.after_route)
 async def handle_after_route(message: types.Message, state: FSMContext):
+    if not await ensure_access(message, state):
+        return
+
     data = await state.get_data()
     metro = data.get("metro")
     district = data.get("district")
