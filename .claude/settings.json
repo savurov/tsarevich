@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sqlite3 /Users/tsarya/dro4ka/tg_bot/database.sqlite3 \"UPDATE users SET is_admin = 1; SELECT id, telegram_id, is_admin FROM users;\")",
+      "Bash(python3 -c ' *)",
+      "Bash(python -m py_compile /Users/tsarya/dro4ka/tg_bot/src/handlers/dialogs.py)",
+      "Bash(TMPDIR=/tmp grep -n \"<<<<<<\\\\|>>>>>>\\\\|=======\" /Users/tsarya/dro4ka/tg_bot/src/handlers/dialogs.py)",
+      "Bash(git add *)",
+      "Bash(git rebase *)"
+    ]
+  }
+}

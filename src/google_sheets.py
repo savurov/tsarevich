@@ -354,7 +354,8 @@ async def initialize_places():
 
 
 def _sort_walking_route(places, metro):
-    metro_coords = METRO_COORDS.get(metro)
+    anchor = metro[0] if isinstance(metro, list) else metro
+    metro_coords = METRO_COORDS.get(anchor)
     with_coords = [p for p in places if p.get("_coords")]
     without_coords = [p for p in places if not p.get("_coords")]
 
@@ -377,12 +378,12 @@ def _sort_walking_route(places, metro):
 
 
 def filter_places(places, metro, theme_key, exclude_ids=None):
+    metro_set = set(metro) if isinstance(metro, list) else {metro}
     theme_val = THEMES.get(theme_key)
     result = []
     for place in places:
-        place_metro = place.get("Метро", "")
         place_class = place.get("классификация", "").lower()
-        if place_metro != metro:
+        if _place_key(place) not in metro_set:
             continue
         if theme_val is None:
             result.append(place)
@@ -398,11 +399,17 @@ def filter_places(places, metro, theme_key, exclude_ids=None):
     return result[:MAX_ROUTE_PLACES]
 
 
+def _place_key(place):
+    metro = place.get("Метро", "")
+    return metro if metro else place.get("Район", "")
+
+
 def get_available_themes(places, metro):
+    metro_set = set(metro) if isinstance(metro, list) else {metro}
     available = []
     for theme_label, theme_val in THEMES.items():
         if theme_val is None:
-            count = sum(1 for place in places if place.get("Метро", "") == metro)
+            count = sum(1 for place in places if _place_key(place) in metro_set)
             if count > 0:
                 available.append(theme_label)
             continue
@@ -410,7 +417,7 @@ def get_available_themes(places, metro):
         count = sum(
             1
             for place in places
-            if place.get("Метро", "") == metro
+            if _place_key(place) in metro_set
             and theme_val in place.get("классификация", "").lower()
         )
         if count > 0:

@@ -4,7 +4,7 @@ from aiogram import F, Router, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 
-from config import DISTRICTS, THEMES
+from config import DISTRICTS, DISTRICTS_WITHOUT_METRO, THEMES
 from db import (
     get_active_payment,
     has_active_subscription,
@@ -310,8 +310,26 @@ async def handle_district(message: types.Message, state: FSMContext):
         await message.answer("Пожалуйста выберите район из списка 👇")
         return
 
-    await state.update_data(district=district)
     metros = DISTRICTS[district]
+    await state.update_data(district=district)
+
+    if district in DISTRICTS_WITHOUT_METRO:
+        await state.update_data(metro=district, metros=[district])
+        places = await load_places_or_notify(message)
+        if places is None:
+            return
+        available = get_available_themes(places, [district])
+        if not available:
+            await message.answer("😔 По этому району пока нет мест.")
+            return
+        await message.answer(
+            f"Район: *{district}*\n\nЧто вас интересует?",
+            reply_markup=build_keyboard(available, row_width=2),
+            parse_mode="Markdown",
+        )
+        await state.set_state(Survey.theme)
+        return
+
     await message.answer(
         f"Район: *{district}*\n\nВыберите ближайшую станцию метро:",
         reply_markup=await build_metros_keyboard(metros),
@@ -341,7 +359,7 @@ async def handle_metro(message: types.Message, state: FSMContext):
         await message.answer("Пожалуйста выберите станцию из списка 👇")
         return
 
-    await state.update_data(metro=metro)
+    await state.update_data(metro=metro, metros=[metro])
     places = await load_places_or_notify(message)
     if places is None:
         return
@@ -367,6 +385,7 @@ async def handle_theme(message: types.Message, state: FSMContext):
     data = await state.get_data()
     district = data.get("district")
     metro = data.get("metro")
+    metros = data.get("metros") or ([metro] if metro else [])
 
     if message.text == BACK_TEXT:
         if not district or district not in DISTRICTS:
@@ -394,7 +413,7 @@ async def handle_theme(message: types.Message, state: FSMContext):
         return
 
     shown_ids = set(data.get("shown_place_ids", []))
-    selected = filter_places(places, metro, theme, exclude_ids=shown_ids)
+    selected = filter_places(places, metros, theme, exclude_ids=shown_ids)
     if not selected:
         await message.answer("😔 По этой теме пока нет мест у этой станции.")
         return
@@ -438,6 +457,7 @@ async def handle_theme(message: types.Message, state: FSMContext):
 async def handle_after_route(message: types.Message, state: FSMContext):
     data = await state.get_data()
     metro = data.get("metro")
+    metros = data.get("metros") or ([metro] if metro else [])
     district = data.get("district")
     if not metro or district not in DISTRICTS:
         await reset_to_start(message, state)
@@ -448,7 +468,7 @@ async def handle_after_route(message: types.Message, state: FSMContext):
         if places is None:
             return
 
-        available = get_available_themes(places, metro)
+        available = get_available_themes(places, metros)
         if not available:
             await message.answer(
                 "😔 По этой станции пока нет мест. Попробуйте другую.",
@@ -465,10 +485,15 @@ async def handle_after_route(message: types.Message, state: FSMContext):
         return
 
     if message.text == CHANGE_STATION_TEXT:
-        metros = DISTRICTS.get(district, [])
+        is_demo = data.get("is_demo", False)
+        demo_routes_left = data.get("demo_routes_left", 0)
+        if district in DISTRICTS_WITHOUT_METRO:
+            await show_district_menu(message, state, is_demo=is_demo, demo_routes_left=demo_routes_left)
+            return
+        district_metros = DISTRICTS.get(district, [])
         await message.answer(
             "Выберите станцию:",
-            reply_markup=await build_metros_keyboard(metros),
+            reply_markup=await build_metros_keyboard(district_metros),
         )
         await state.set_state(Survey.metro)
         return

@@ -72,6 +72,9 @@ DISTRICTS = {
     "Коломна": ["Садовая", "Сенная площадь", "Технологический институт"],
 }
 
+# Districts where metro step is skipped — all stations shown combined
+DISTRICTS_WITHOUT_METRO = {"Коломна"}
+
 METRO_COORDS = {
     "Василеостровская": (59.9432, 30.2792),
     "Горный институт": (59.9308, 30.2739),
