@@ -377,6 +377,27 @@ def _sort_walking_route(places, metro):
     return route + without_coords
 
 
+def _select_mix_places(places, max_count, metro):
+    by_category = {}
+    for place in places:
+        parts = _split_classification(place.get("классификация", ""))
+        category = parts[0] if parts else ""
+        by_category.setdefault(category, []).append(place)
+
+    selected = []
+    buckets = [list(bucket) for bucket in by_category.values()]
+    while len(selected) < max_count:
+        buckets = [b for b in buckets if b]
+        if not buckets:
+            break
+        for bucket in buckets:
+            if len(selected) >= max_count:
+                break
+            selected.append(bucket.pop(0))
+
+    return _sort_walking_route(selected, metro)
+
+
 def filter_places(places, metro, theme_key, exclude_ids=None):
     metro_set = set(metro) if isinstance(metro, list) else {metro}
     theme_val = THEMES.get(theme_key)
@@ -394,6 +415,9 @@ def filter_places(places, metro, theme_key, exclude_ids=None):
         fresh = [p for p in result if p.get("_sheet_row_number") not in exclude_ids]
         if fresh:
             result = fresh
+
+    if theme_val is None:
+        return _select_mix_places(result, MAX_ROUTE_PLACES, metro)
 
     result = _sort_walking_route(result, metro)
     return result[:MAX_ROUTE_PLACES]
