@@ -32,6 +32,7 @@ protected_router.message.middleware(SubscriptionRequiredMiddleware())
 SAME_STATION_TEXT = "📍 Та же станция"
 CHANGE_STATION_TEXT = "🔀 Сменить станцию"
 BACK_TO_START_TEXT = "🏠 В начало"
+MORE_SAME_THEME_TEXT = "Ещё →"
 START_BUTTON_TEXT = "Начать"
 ROUTE_MENU_TEXT = "🗺 Подобрать маршрут"
 SUBSCRIPTION_MENU_TEXT = "💳 Подписка"
@@ -43,6 +44,7 @@ MAIN_MENU_BUTTONS = [
     HELP_MENU_TEXT,
 ]
 AFTER_ROUTE_OPTIONS = [
+    MORE_SAME_THEME_TEXT,
     SAME_STATION_TEXT,
     CHANGE_STATION_TEXT,
     BACK_TO_START_TEXT,
@@ -419,7 +421,7 @@ async def handle_theme(message: types.Message, state: FSMContext):
         return
 
     new_shown_ids = shown_ids | {p.get("_sheet_row_number") for p in selected}
-    await state.update_data(shown_place_ids=list(new_shown_ids))
+    await state.update_data(shown_place_ids=list(new_shown_ids), theme=theme)
 
     route = format_route(selected, metro, theme)
     await message.answer(
@@ -461,6 +463,63 @@ async def handle_after_route(message: types.Message, state: FSMContext):
     district = data.get("district")
     if not metro or district not in DISTRICTS:
         await reset_to_start(message, state)
+        return
+
+    if message.text == MORE_SAME_THEME_TEXT:
+        theme = data.get("theme")
+        if not theme or not metro:
+            await reset_to_start(message, state)
+            return
+
+        places = await load_places_or_notify(message)
+        if places is None:
+            return
+
+        shown_ids = set(data.get("shown_place_ids", []))
+        selected = filter_places(places, metros, theme, exclude_ids=shown_ids)
+        if not selected:
+            await message.answer("😔 По этой теме больше нет мест.")
+            await message.answer(
+                "Хотите посмотреть ещё?",
+                reply_markup=build_keyboard(AFTER_ROUTE_OPTIONS, row_width=2),
+            )
+            return
+
+        fresh_selected = [p for p in selected if p.get("_sheet_row_number") not in shown_ids]
+        if fresh_selected:
+            new_shown_ids = shown_ids | {p.get("_sheet_row_number") for p in selected}
+        else:
+            new_shown_ids = {p.get("_sheet_row_number") for p in selected}
+        await state.update_data(shown_place_ids=list(new_shown_ids))
+
+        route = format_route(selected, metro, theme)
+        await message.answer(
+            route,
+            reply_markup=types.ReplyKeyboardRemove(),
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+        await asyncio.sleep(0.3)
+
+        is_demo = data.get("is_demo", False)
+        demo_routes_left = data.get("demo_routes_left", 0)
+        if is_demo:
+            demo_routes_left -= 1
+            await state.update_data(demo_routes_left=demo_routes_left)
+            if demo_routes_left <= 0:
+                if message.from_user:
+                    mark_demo_used(message.from_user.id)
+                await message.answer(
+                    "🎁 Демо-доступ исчерпан.\n\nЧтобы продолжить, выберите тариф:",
+                    reply_markup=types.ReplyKeyboardRemove(),
+                )
+                await show_subscription_status(message, state)
+                return
+
+        await message.answer(
+            "Хотите посмотреть ещё?",
+            reply_markup=build_keyboard(AFTER_ROUTE_OPTIONS, row_width=2),
+        )
         return
 
     if message.text == SAME_STATION_TEXT:
