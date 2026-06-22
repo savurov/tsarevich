@@ -13,6 +13,7 @@ import aiohttp
 
 from config import (
     DISTRICTS,
+    DISTRICTS_WITHOUT_METRO,
     MAX_ROUTE_PLACES,
     METRO_COORDS,
     PLACES_REQUEST_TIMEOUT_SECONDS,
@@ -472,7 +473,7 @@ def format_route(places, metro, theme):
 
 
 def _get_allowed_metros():
-    return set(METRO_LOOKUP.values())
+    return set(METRO_LOOKUP.values()) | DISTRICTS_WITHOUT_METRO
 
 
 def _get_allowed_theme_values():
