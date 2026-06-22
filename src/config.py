@@ -36,13 +36,6 @@ MAX_ROUTE_PLACES = 5
 REQUIRED_PLACE_COLUMNS = ("Метро", "классификация", "Название", "Адрес")
 
 PAYMENT_PLANS = {
-    "1hour": {
-        "label": "60 ₽ — 1 час",
-        "title": "Доступ на 1 час",
-        "description": "Маршруты и подборки мест в Петербурге на 1 час.",
-        "price_minor_units": 6000,
-        "duration_days": 1 / 24,
-    },
     "1day": {
         "label": "290 ₽ — 1 день",
         "title": "Доступ на 1 день",
