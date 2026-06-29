@@ -51,6 +51,12 @@ AFTER_ROUTE_OPTIONS = [
 ]
 
 DEMO_ROUTES_LIMIT = 2
+DEMO_EXHAUSTED_PAYMENT_TEXT = (
+    "Вы уже посмотрели 2 маршрута и нашли несколько мест рядом.\n\n"
+    "А впереди ещё: кафе, бары, арт-пространства, книжные — "
+    "лучшие места Васильевского острова и Коломны.\n\n"
+    "290 ₽, один день, 130+ мест — выбирайте куда идти."
+)
 BACK_TEXT = "← Назад"
 INACTIVE_METRO_PREFIX = "🙅 "
 
@@ -147,7 +153,14 @@ async def show_subscription_status(message: types.Message, state: FSMContext):
         )
         return
 
-    await message.answer(text, reply_markup=types.ReplyKeyboardRemove())
+    if has_used_demo(message.from_user.id):
+        await state.set_state(Survey.payment)
+        await message.answer(
+            DEMO_EXHAUSTED_PAYMENT_TEXT,
+            reply_markup=build_payment_keyboard(include_demo=False),
+        )
+        return
+
     await show_payment_screen(message, state)
 
 
@@ -292,8 +305,9 @@ async def handle_demo_start(callback: types.CallbackQuery, state: FSMContext):
         and has_used_demo(telegram_user_id)
         and not is_admin_user(telegram_user_id)
     ):
+        await state.set_state(Survey.payment)
         await callback.message.answer(
-            "Вы уже использовали демо-доступ.\n\nВыберите тариф для продолжения:",
+            DEMO_EXHAUSTED_PAYMENT_TEXT,
             reply_markup=build_payment_keyboard(include_demo=False),
         )
         return
@@ -443,10 +457,7 @@ async def handle_theme(message: types.Message, state: FSMContext):
                 mark_demo_used(message.from_user.id)
             await state.set_state(Survey.payment)
             await message.answer(
-                "Вы уже посмотрели 2 маршрута и нашли несколько мест рядом.\n\n"
-                "А впереди ещё: кафе, бары, арт-пространства, книжные — "
-                "лучшие места Васильевского острова и Коломны.\n\n"
-                "290 ₽, один день, 130+ мест — выбирайте куда идти.",
+                DEMO_EXHAUSTED_PAYMENT_TEXT,
                 reply_markup=build_payment_keyboard(include_demo=False),
             )
             return
