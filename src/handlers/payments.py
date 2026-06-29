@@ -32,7 +32,6 @@ def build_payment_keyboard(include_demo=True):
 async def show_payment_screen(message: types.Message, state: FSMContext):
     await state.set_state(Survey.payment)
     include_demo = bool(message.from_user and not has_used_demo(message.from_user.id))
-    await message.answer("Открываю варианты доступа.", reply_markup=types.ReplyKeyboardRemove())
     await message.answer(
         "Выберите тариф для доступа:\n\n"
         "После выбора тарифа Telegram откроет встроенную форму оплаты.",
