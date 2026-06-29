@@ -442,7 +442,10 @@ async def handle_theme(message: types.Message, state: FSMContext):
             if message.from_user:
                 mark_demo_used(message.from_user.id)
             await message.answer(
-                "🎁 Демо-доступ исчерпан.\n\nЧтобы продолжить, выберите тариф:",
+                "Вы уже посмотрели 2 маршрута и нашли несколько мест рядом.\n\n"
+                    "А впереди ещё: кафе, бары, арт-пространства, книжные — "
+                    "лучшие места Васильевского острова и Коломны.\n\n"
+                    "290 ₽, один день, 130+ мест — выбирайте куда идти.",
                 reply_markup=types.ReplyKeyboardRemove(),
             )
             await show_subscription_status(message, state)
@@ -510,7 +513,10 @@ async def handle_after_route(message: types.Message, state: FSMContext):
                 if message.from_user:
                     mark_demo_used(message.from_user.id)
                 await message.answer(
-                    "🎁 Демо-доступ исчерпан.\n\nЧтобы продолжить, выберите тариф:",
+                    "Вы уже посмотрели 2 маршрута и нашли несколько мест рядом.\n\n"
+                    "А впереди ещё: кафе, бары, арт-пространства, книжные — "
+                    "лучшие места Васильевского острова и Коломны.\n\n"
+                    "290 ₽, один день, 130+ мест — выбирайте куда идти.",
                     reply_markup=types.ReplyKeyboardRemove(),
                 )
                 await show_subscription_status(message, state)
