@@ -11,6 +11,7 @@ class Survey(StatesGroup):
 
 
 class AdminSubscriptions(StatesGroup):
+    user_search = State()
     user_list = State()
     user_details = State()
     add_subscription = State()

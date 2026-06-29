@@ -158,18 +158,19 @@ def _get_user_admin_label(telegram_user_id):
 
 
 async def show_subscription_users(message: types.Message, state: FSMContext):
-    users = get_all_users_by_telegram_id()
-    if not users:
-        await message.answer("Пользователей пока нет.", reply_markup=get_admin_keyboard())
-        return
-
-    labels = {format_user_label(user): user["telegram_user_id"] for user in users}
-    await state.set_state(AdminSubscriptions.user_list)
-    await state.update_data(subscription_user_labels=labels)
+    await state.set_state(AdminSubscriptions.user_search)
     await message.answer(
-        "Выберите пользователя:",
-        reply_markup=build_keyboard([*labels.keys(), SUBSCRIPTION_BACK_TEXT], row_width=1),
+        "Введите @username или числовой ID пользователя:",
+        reply_markup=build_keyboard([SUBSCRIPTION_BACK_TEXT], row_width=1),
     )
+
+
+def _search_users(query: str):
+    query = query.strip().lstrip("@")
+    users = get_all_users_by_telegram_id()
+    if query.isdigit():
+        return [u for u in users if str(u["telegram_user_id"]) == query]
+    return [u for u in users if u["username"] and u["username"].lower() == query.lower()]
 
 
 async def show_subscription_user_details(message: types.Message, state: FSMContext, telegram_user_id):
@@ -331,8 +332,8 @@ async def handle_admin_subscriptions(message: types.Message, state: FSMContext):
     await show_subscription_users(message, state)
 
 
-@router.message(AdminSubscriptions.user_list)
-async def handle_subscription_user_list(message: types.Message, state: FSMContext):
+@router.message(AdminSubscriptions.user_search)
+async def handle_subscription_user_search(message: types.Message, state: FSMContext):
     if not message.from_user or not is_admin_user(message.from_user.id):
         await message.answer(ADMIN_ACCESS_TEXT)
         return
@@ -342,6 +343,36 @@ async def handle_subscription_user_list(message: types.Message, state: FSMContex
     if message.text == SUBSCRIPTION_BACK_TEXT:
         await state.clear()
         await message.answer(format_admin_menu_text(), reply_markup=get_admin_keyboard())
+        return
+
+    found = _search_users(message.text or "")
+    if not found:
+        await message.answer("Пользователь не найден. Попробуйте ещё раз:")
+        return
+
+    if len(found) == 1:
+        await show_subscription_user_details(message, state, found[0]["telegram_user_id"])
+        return
+
+    labels = {format_user_label(u): u["telegram_user_id"] for u in found}
+    await state.set_state(AdminSubscriptions.user_list)
+    await state.update_data(subscription_user_labels=labels)
+    await message.answer(
+        "Найдено несколько пользователей:",
+        reply_markup=build_keyboard([*labels.keys(), SUBSCRIPTION_BACK_TEXT], row_width=1),
+    )
+
+
+@router.message(AdminSubscriptions.user_list)
+async def handle_subscription_user_list(message: types.Message, state: FSMContext):
+    if not message.from_user or not is_admin_user(message.from_user.id):
+        await message.answer(ADMIN_ACCESS_TEXT)
+        return
+    if await handle_admin_navigation(message, state):
+        return
+
+    if message.text == SUBSCRIPTION_BACK_TEXT:
+        await show_subscription_users(message, state)
         return
 
     data = await state.get_data()
